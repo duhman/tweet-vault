@@ -1,0 +1,36 @@
+{
+  "name": "tweet-vault",
+  "version": "1.0.0",
+  "description": "Twitter bookmarks intelligence system with semantic search",
+  "type": "module",
+  "packageManager": "bun@1.2.22",
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "build": "tsc",
+    "start": "bun run dist/index.js",
+    "import": "bun run scripts/initial-import.ts",
+    "sync": "bun run scripts/sync-from-bird.ts",
+    "sync:all": "bun run scripts/sync-from-bird.ts --all",
+    "process": "bun run src/index.ts process",
+    "mcp": "bun run mcp-server/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@steipete/bird": "latest",
+    "@supabase/supabase-js": "^2.47.0",
+    "cheerio": "^1.0.0",
+    "dotenv": "^17.2.3",
+    "openai": "^4.76.0",
+    "p-limit": "^6.1.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.3",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
