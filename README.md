@@ -62,6 +62,21 @@ cd /Users/bigmac/projects/personal/self-host
 CONVEX_DEPLOY_KEY="$(cat .convex-deploy-key)" npx convex deploy
 ```
 
+### Backfills (self-host Convex)
+
+For existing data, run these from the self-host repo:
+
+```bash
+cd /Users/bigmac/projects/personal/self-host
+CONVEX_DEPLOY_KEY="$(cat .convex-deploy-key)" \
+CONVEX_DEPLOYMENT=utmost-gerbil-770 \
+node scripts/run_tweet_links_backfill.mjs --limit 50
+
+CONVEX_DEPLOY_KEY="$(cat .convex-deploy-key)" \
+CONVEX_DEPLOYMENT=utmost-gerbil-770 \
+node scripts/run_tweet_vault_processing.mjs --limit 50
+```
+
 ### Import Your Bookmarks
 
 **Option 1: Bird CLI (Recommended)**

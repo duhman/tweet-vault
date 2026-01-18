@@ -63,6 +63,20 @@ Uses Convex deployment `https://utmost-gerbil-770.convex.cloud`
 - `tweetVaultQueries.getTweet` - Full tweet with all links
 - `tweetVaultQueries.vaultStats` - Vault statistics
 
+### Backfills (self-host Convex)
+
+Run these from `/Users/bigmac/projects/personal/self-host`:
+
+```bash
+CONVEX_DEPLOY_KEY="$(cat .convex-deploy-key)" \
+CONVEX_DEPLOYMENT=utmost-gerbil-770 \
+node scripts/run_tweet_links_backfill.mjs --limit 50
+
+CONVEX_DEPLOY_KEY="$(cat .convex-deploy-key)" \
+CONVEX_DEPLOYMENT=utmost-gerbil-770 \
+node scripts/run_tweet_vault_processing.mjs --limit 50
+```
+
 ## MCP Server
 
 The MCP server exposes these tools to Claude:
