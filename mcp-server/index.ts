@@ -7,19 +7,17 @@ import {
   Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import { config } from "dotenv";
-import {
-  searchTweets,
-  searchLinks,
-  getStats,
-  getTweetByTweetId,
-  getSupabaseClient,
-  Tweet,
-  Link,
-} from "../src/utils/supabase.js";
-import { generateEmbedding } from "../src/utils/openai.js";
+import { ConvexHttpClient } from "convex/browser";
+import { api } from "../src/utils/convexApi.js";
 
 // Load environment variables
 config();
+
+const convexUrl = process.env.CONVEX_URL;
+if (!convexUrl) {
+  throw new Error("CONVEX_URL is required for Tweet Vault MCP server");
+}
+const convex = new ConvexHttpClient(convexUrl);
 
 // Define available tools
 const tools: Tool[] = [
@@ -169,21 +167,27 @@ async function handleSearchTweets(
   limit = 10,
   threshold = 0.5,
 ): Promise<string> {
-  const embedding = await generateEmbedding(query);
-  const results = await searchTweets(embedding, threshold, Math.min(limit, 50));
+  const results = await convex.action(api.tweetVaultQueries.searchTweets, {
+    query,
+    limit: Math.min(limit, 50),
+  });
 
-  if (results.length === 0) {
+  const filtered = threshold
+    ? results.filter((r: any) => r.score >= threshold)
+    : results;
+
+  if (filtered.length === 0) {
     return "No matching tweets found. Try a broader search query or lower the similarity threshold.";
   }
 
-  return results
+  return filtered
     .map(
-      (tweet, i) =>
-        `${i + 1}. **@${tweet.author_username}** (${(tweet.similarity * 100).toFixed(1)}% match)
-   ${tweet.content.slice(0, 280)}${tweet.content.length > 280 ? "..." : ""}
-   📅 ${tweet.created_at ? new Date(tweet.created_at).toLocaleDateString() : "Unknown date"}
-   ❤️ ${tweet.metrics?.likes ?? 0} | 🔁 ${tweet.metrics?.retweets ?? 0}
-   🔗 Tweet ID: ${tweet.tweet_id}`,
+      (entry: any, i: number) =>
+        `${i + 1}. **@${entry.tweet.author_username}** (${(entry.score * 100).toFixed(1)}% match)
+   ${entry.tweet.content.slice(0, 280)}${entry.tweet.content.length > 280 ? "..." : ""}
+   📅 ${entry.tweet.created_at ? new Date(entry.tweet.created_at).toLocaleDateString() : "Unknown date"}
+   ❤️ ${entry.tweet.metrics?.likes ?? 0} | 🔁 ${entry.tweet.metrics?.retweets ?? 0}
+   🔗 Tweet ID: ${entry.tweet.tweet_id}`,
     )
     .join("\n\n");
 }
@@ -193,37 +197,38 @@ async function handleSearchLinks(
   limit = 10,
   threshold = 0.5,
 ): Promise<string> {
-  const embedding = await generateEmbedding(query);
-  const results = await searchLinks(embedding, threshold, Math.min(limit, 50));
+  const results = await convex.action(api.tweetVaultQueries.searchLinks, {
+    query,
+    limit: Math.min(limit, 50),
+  });
 
-  if (results.length === 0) {
+  const filtered = threshold
+    ? results.filter((r: any) => r.score >= threshold)
+    : results;
+
+  if (filtered.length === 0) {
     return "No matching links found. Try a broader search query or lower the similarity threshold.";
   }
 
-  return results
+  return filtered
     .map(
-      (link, i) =>
-        `${i + 1}. **${link.title || "Untitled"}** (${(link.similarity * 100).toFixed(1)}% match)
-   ${link.description?.slice(0, 200) || "No description"}${(link.description?.length ?? 0) > 200 ? "..." : ""}
-   🌐 ${link.domain || "Unknown domain"}
-   🔗 ${link.expanded_url || link.url}`,
+      (entry: any, i: number) =>
+        `${i + 1}. **${entry.link.title || "Untitled"}** (${(entry.score * 100).toFixed(1)}% match)
+   ${entry.link.description?.slice(0, 200) || "No description"}${(entry.link.description?.length ?? 0) > 200 ? "..." : ""}
+   🌐 ${entry.link.domain || "Unknown domain"}
+   🔗 ${entry.link.expanded_url || entry.link.url}`,
     )
     .join("\n\n");
 }
 
 async function handleGetTweet(tweetId: string): Promise<string> {
-  const tweet = await getTweetByTweetId(tweetId);
+  const tweet = await convex.query(api.tweetVaultQueries.getTweet, {
+    tweet_id: tweetId,
+  });
 
   if (!tweet) {
     return `Tweet with ID ${tweetId} not found in the vault.`;
   }
-
-  // Get associated links
-  const client = getSupabaseClient();
-  const { data: links } = await client
-    .from("links")
-    .select("*")
-    .eq("tweet_id", tweet.id);
 
   let result = `**@${tweet.author_username}** ${tweet.author_name ? `(${tweet.author_name})` : ""}
 📅 ${tweet.created_at ? new Date(tweet.created_at).toLocaleDateString() : "Unknown date"}
@@ -232,11 +237,11 @@ ${tweet.content}
 
 📊 Metrics: ❤️ ${tweet.metrics?.likes ?? 0} | 🔁 ${tweet.metrics?.retweets ?? 0} | 💬 ${tweet.metrics?.replies ?? 0}`;
 
-  if (links && links.length > 0) {
+  if (tweet.links && tweet.links.length > 0) {
     result += "\n\n🔗 **Extracted Links:**\n";
-    result += links
+    result += tweet.links
       .map(
-        (link: Link) =>
+        (link: any) =>
           `- ${link.title || link.url}\n  ${link.expanded_url || link.url}`,
       )
       .join("\n");
@@ -244,7 +249,7 @@ ${tweet.content}
 
   if (tweet.media_urls && tweet.media_urls.length > 0) {
     result += "\n\n🖼️ **Media:**\n";
-    result += tweet.media_urls.map((url) => `- ${url}`).join("\n");
+    result += tweet.media_urls.map((url: string) => `- ${url}`).join("\n");
   }
 
   return result;
@@ -254,16 +259,10 @@ async function handleListLinksByDomain(
   domain: string,
   limit = 20,
 ): Promise<string> {
-  const client = getSupabaseClient();
-  const { data: links, error } = await client
-    .from("links")
-    .select("*, tweets!inner(author_username, content)")
-    .ilike("domain", `%${domain}%`)
-    .limit(limit);
-
-  if (error) {
-    return `Error fetching links: ${error.message}`;
-  }
+  const links = await convex.query(api.tweetVaultQueries.listLinksByDomain, {
+    domain,
+    limit,
+  });
 
   if (!links || links.length === 0) {
     return `No links found from domain "${domain}".`;
@@ -273,25 +272,22 @@ async function handleListLinksByDomain(
     `Found ${links.length} links from "${domain}":\n\n` +
     links
       .map(
-        (
-          link: Link & { tweets: { author_username: string; content: string } },
-          i: number,
-        ) =>
+        (link: any, i: number) =>
           `${i + 1}. **${link.title || "Untitled"}**
    ${link.expanded_url || link.url}
-   From tweet by @${link.tweets.author_username}`,
+   From tweet_id: ${link.tweet_id ?? "unknown"}`,
       )
       .join("\n\n")
   );
 }
 
 async function handleFindRelated(topic: string, limit = 5): Promise<string> {
-  const embedding = await generateEmbedding(topic);
-
-  const [tweets, links] = await Promise.all([
-    searchTweets(embedding, 0.5, limit),
-    searchLinks(embedding, 0.5, limit),
-  ]);
+  const related = await convex.action(api.tweetVaultQueries.findRelated, {
+    topic,
+    limit,
+  });
+  const tweets = related.tweets ?? [];
+  const links = related.links ?? [];
 
   let result = `## Related content for: "${topic}"\n\n`;
 
@@ -299,9 +295,9 @@ async function handleFindRelated(topic: string, limit = 5): Promise<string> {
     result += "### 📱 Related Tweets\n\n";
     result += tweets
       .map(
-        (tweet, i) =>
-          `${i + 1}. **@${tweet.author_username}** (${(tweet.similarity * 100).toFixed(0)}%)
-   ${tweet.content.slice(0, 200)}...`,
+        (entry: any, i: number) =>
+          `${i + 1}. **@${entry.tweet.author_username}** (${(entry.score * 100).toFixed(0)}%)
+   ${entry.tweet.content.slice(0, 200)}...`,
       )
       .join("\n\n");
   } else {
@@ -314,10 +310,10 @@ async function handleFindRelated(topic: string, limit = 5): Promise<string> {
     result += "### 🔗 Related Links\n\n";
     result += links
       .map(
-        (link, i) =>
-          `${i + 1}. **${link.title || "Untitled"}** (${(link.similarity * 100).toFixed(0)}%)
-   ${link.expanded_url || link.url}
-   ${link.description?.slice(0, 100) || ""}...`,
+        (entry: any, i: number) =>
+          `${i + 1}. **${entry.link.title || "Untitled"}** (${(entry.score * 100).toFixed(0)}%)
+   ${entry.link.expanded_url || entry.link.url}
+   ${entry.link.description?.slice(0, 100) || ""}...`,
       )
       .join("\n\n");
   } else {
@@ -328,7 +324,7 @@ async function handleFindRelated(topic: string, limit = 5): Promise<string> {
 }
 
 async function handleVaultStats(): Promise<string> {
-  const stats = await getStats();
+  const stats = await convex.query(api.tweetVaultQueries.vaultStats, {});
 
   let result = `## 📊 Tweet Vault Statistics
 
@@ -342,7 +338,7 @@ async function handleVaultStats(): Promise<string> {
     result += "\n\n**Top Authors:**\n";
     result += stats.top_authors
       .slice(0, 5)
-      .map((a) => `- @${a.author_username}: ${a.tweet_count} tweets`)
+      .map((a: string) => `- @${a}`)
       .join("\n");
   }
 
@@ -350,15 +346,13 @@ async function handleVaultStats(): Promise<string> {
     result += "\n\n**Top Domains:**\n";
     result += stats.top_domains
       .slice(0, 5)
-      .map((d) => `- ${d.domain}: ${d.link_count} links`)
+      .map((d: string) => `- ${d}`)
       .join("\n");
   }
 
   if (stats.last_sync) {
     result += `\n\n**Last Sync:**
-- Time: ${new Date(stats.last_sync.last_sync_at).toLocaleString()}
-- Tweets added: ${stats.last_sync.tweets_added}
-- Links processed: ${stats.last_sync.links_processed}`;
+- Time: ${new Date(stats.last_sync).toLocaleString()}`;
   }
 
   return result;
@@ -368,17 +362,10 @@ async function handleListAuthors(
   username: string,
   limit = 20,
 ): Promise<string> {
-  const client = getSupabaseClient();
-  const { data: tweets, error } = await client
-    .from("tweets")
-    .select("*")
-    .ilike("author_username", username)
-    .order("created_at", { ascending: false })
-    .limit(limit);
-
-  if (error) {
-    return `Error fetching tweets: ${error.message}`;
-  }
+  const tweets = await convex.query(api.tweetVaultQueries.listAuthors, {
+    username,
+    limit,
+  });
 
   if (!tweets || tweets.length === 0) {
     return `No bookmarked tweets found from @${username}.`;
@@ -388,7 +375,7 @@ async function handleListAuthors(
     `Found ${tweets.length} bookmarked tweets from @${username}:\n\n` +
     tweets
       .map(
-        (tweet: Tweet, i: number) =>
+        (tweet: any, i: number) =>
           `${i + 1}. ${tweet.content.slice(0, 200)}${tweet.content.length > 200 ? "..." : ""}
    📅 ${tweet.created_at ? new Date(tweet.created_at).toLocaleDateString() : "Unknown"}
    ❤️ ${tweet.metrics?.likes ?? 0} | 🔁 ${tweet.metrics?.retweets ?? 0}`,

@@ -18,11 +18,8 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@steipete/bird": "latest",
-    "@supabase/supabase-js": "^2.47.0",
-    "cheerio": "^1.0.0",
+    "convex": "^1.16.2",
     "dotenv": "^17.2.3",
-    "openai": "^4.76.0",
-    "p-limit": "^6.1.0",
     "zod": "^3.24.0"
   },
   "devDependencies": {

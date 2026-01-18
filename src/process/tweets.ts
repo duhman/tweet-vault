@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { Tweet, upsertTweets, getExistingTweetIds } from "../utils/supabase.js";
+import { Tweet, upsertTweets } from "../utils/convex.js";
 
 // Schema for Twitter GraphQL bookmark response (simplified)
 const TweetDataSchema = z.object({
@@ -170,16 +170,46 @@ export function extractUrlsFromTweet(
   }
 
   // Also extract any URLs from content via regex
+  const contentNormalized = normalizeUrlText(tweet.content);
   const urlRegex = /https?:\/\/[^\s]+/g;
-  const contentUrls = tweet.content.match(urlRegex) ?? [];
+  const contentUrls = contentNormalized.match(urlRegex) ?? [];
   for (const url of contentUrls) {
+    const cleaned = trimUrl(url);
+    if (!cleaned) continue;
     // Only add if not already in entities
-    if (!urls.some((u) => u.url === url || u.expanded_url === url)) {
-      urls.push({ url });
+    if (!urls.some((u) => u.url === cleaned || u.expanded_url === cleaned)) {
+      urls.push({ url: cleaned });
     }
   }
 
   return urls;
+}
+
+function isUrlChar(char: string): boolean {
+  return /[A-Za-z0-9\-._~:/?#@!$&'()*+,;=%]/.test(char);
+}
+
+function normalizeUrlText(text: string): string {
+  const chars = [...text];
+  let output = "";
+  for (let i = 0; i < chars.length; i += 1) {
+    const char = chars[i];
+    if (char === "\n" || char === "\r") {
+      const prev = chars[i - 1] ?? "";
+      const next = chars[i + 1] ?? "";
+      if (isUrlChar(prev) && isUrlChar(next)) {
+        continue;
+      }
+      output += " ";
+      continue;
+    }
+    output += char;
+  }
+  return output;
+}
+
+function trimUrl(url: string): string {
+  return url.replace(/[)\].,;!?…]+$/g, "");
 }
 
 /**
@@ -189,9 +219,6 @@ export function extractUrlsFromTweet(
 export async function processTweets(
   tweets: unknown[],
 ): Promise<{ added: Tweet[]; skipped: number }> {
-  // Get existing tweet IDs to avoid duplicates
-  const existingIds = await getExistingTweetIds();
-
   const parsedTweets: Tweet[] = [];
   let skipped = 0;
 
@@ -208,11 +235,6 @@ export async function processTweets(
       continue;
     }
 
-    if (existingIds.has(tweet.tweet_id)) {
-      skipped++;
-      continue;
-    }
-
     parsedTweets.push(tweet);
   }
 
@@ -221,6 +243,9 @@ export async function processTweets(
   }
 
   // Upsert to database
-  const added = await upsertTweets(parsedTweets);
+  const { added: addedIds } = await upsertTweets(parsedTweets);
+  const addedSet = new Set(addedIds);
+  const added = parsedTweets.filter((tweet) => addedSet.has(tweet.tweet_id));
+  skipped += parsedTweets.length - added.length;
   return { added, skipped };
 }

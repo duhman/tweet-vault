@@ -1,5 +1,7 @@
 # 🐦 Setting Up Likes Sync (Bird v0.7.0+)
 
+> Deprecated: Tweet Vault has migrated to Convex. Supabase CLI/Edge Function steps below are legacy.
+
 **Status**: Ready to deploy  
 **Time to setup**: 10 minutes  
 **Requirements**: Supabase CLI, Bird 0.7.0+

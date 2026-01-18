@@ -173,7 +173,7 @@ The import script handles multiple formats:
 3. **Extract Links**: Finds URLs in tweet content
 4. **Fetch Metadata**: Gets title/description for each link
 5. **Generate Embeddings**: Creates 1536d vectors via OpenAI
-6. **Store**: Saves to Supabase with HNSW-indexed vectors
+6. **Store**: Saves to Convex with vector indexes
 
 ---
 
@@ -187,9 +187,8 @@ The import script handles multiple formats:
 
 ### Rate Limiting
 
-- Link metadata fetching uses 5 concurrent requests
-- Embedding generation uses 3 concurrent requests
-- Adjust in `fetchAllLinkMetadata(concurrency, batchSize)`
+- Link metadata + embeddings run in Convex actions
+- Adjust batch sizes via `fetchAllLinkMetadata(batchSize)` and `processAllEmbeddings(concurrency)`
 
 ### Twitter Login Required
 

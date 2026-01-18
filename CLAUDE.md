@@ -2,13 +2,13 @@
 
 Capture Twitter/X bookmarked tweets, extract links and content, generate embeddings, and make them searchable via semantic search.
 
-## Status: ✅ Operational
+## Status: ✅ Operational (Convex)
 
 | Metric               | Value                                 |
 | -------------------- | ------------------------------------- |
-| Tweets imported      | 290                                   |
-| Embeddings generated | 290 (100%)                            |
-| Daily sync           | 6 AM UTC via pg_cron                  |
+| Tweets imported      | 300                                   |
+| Embeddings generated | 300 (100%)                            |
+| Daily sync           | 6 AM UTC via Convex cron              |
 | MCP Server           | Configured in ~/.claude/settings.json |
 
 ## Quick Start
@@ -37,7 +37,7 @@ bun run fetch-links    # Fetch link metadata
 ├─────────────────────────────────────────────────────────────────────────┤
 │  Bird CLI (NEW)  ──┐                                                     │
 │  - npm run sync    │                                                     │
-│  - Auto-extract    ├──→ Processing Pipeline ──→ Supabase (pgvector)     │
+│  - Auto-extract    ├──→ Processing Pipeline ──→ Convex                  │
 │                    │    (dedupe, links,        │                         │
 │  Manual Export ────┘     embeddings)           ↓                         │
 │  - JSON file                              MCP Server → Claude            │
@@ -48,7 +48,7 @@ bun run fetch-links    # Fetch link metadata
 
 ## Database
 
-Uses self-hosted Supabase at `srv1209224.hstgr.cloud`
+Uses Convex deployment `https://utmost-gerbil-770.convex.cloud`
 
 | Table        | Purpose                                   |
 | ------------ | ----------------------------------------- |
@@ -56,12 +56,12 @@ Uses self-hosted Supabase at `srv1209224.hstgr.cloud`
 | `links`      | Extracted URLs with metadata + embeddings |
 | `sync_state` | Sync history and stats                    |
 
-### Key Functions
+### Key Functions (Convex)
 
-- `search_tweets(embedding, threshold, limit)` - Semantic tweet search
-- `search_links(embedding, threshold, limit)` - Semantic link search
-- `get_tweet_with_links(tweet_id)` - Full tweet with all links
-- `get_tweet_vault_stats()` - Vault statistics
+- `tweetVaultQueries.searchTweets` - Semantic tweet search
+- `tweetVaultQueries.searchLinks` - Semantic link search
+- `tweetVaultQueries.getTweet` - Full tweet with all links
+- `tweetVaultQueries.vaultStats` - Vault statistics
 
 ## MCP Server
 
@@ -77,6 +77,17 @@ The MCP server exposes these tools to Claude:
 | `vault_stats`          | Show vault statistics                      |
 | `list_authors`         | List tweets from specific author           |
 
+## Alternative: Local Database Search
+
+The `local-db-search` skill provides fast local queries if tweet-vault data is synced to local PostgreSQL:
+
+- **Performance**: <40ms (faster than MCP server)
+- **Offline**: Works without network
+- **Database**: localhost:5432, database `elaway_kb`
+- **Usage**: See `/Users/bigmac/agents/skills/local-db-search/SKILL.md`
+
+**Note**: tweet-vault MCP provides semantic search (embeddings). Local-db-search provides fast keyword search.
+
 ### Setup MCP Server
 
 Add to `~/.mcp.json`:
@@ -91,9 +102,7 @@ Add to `~/.mcp.json`:
         "/Users/bigmac/projects/personal/tweet-vault/mcp-server/index.ts"
       ],
       "env": {
-        "SUPABASE_URL": "${SUPABASE_SELFHOSTED_URL}",
-        "SUPABASE_SERVICE_ROLE_KEY": "${SUPABASE_SELFHOSTED_SERVICE_KEY}",
-        "OPENAI_API_KEY": "${OPENAI_API_KEY}"
+        "CONVEX_URL": "https://utmost-gerbil-770.convex.cloud"
       }
     }
   }
@@ -143,66 +152,20 @@ claude mcp add playwright -- npx @playwright/mcp@latest
 2. **Deduplicate**: Check against existing tweet_ids in database
 3. **Extract Links**: Parse URLs from tweet content and entities
 4. **Fetch Metadata**: GET each URL, extract og:title, og:description, og:image
-5. **Generate Embeddings**: OpenAI text-embedding-3-small (1536d)
-6. **Store**: Upsert to Supabase with HNSW-indexed vectors
+5. **Generate Embeddings**: OpenAI text-embedding-3-small (1536d) in Convex
+6. **Store**: Upsert to Convex with vector indexes
 
-## Daily Sync (pg_cron)
+## Daily Sync (Convex cron)
 
-A cron job runs daily at 6 AM UTC to process pending embeddings and link metadata.
-
-### Cron Job Status
-
-```sql
--- Check scheduled jobs
-SELECT jobname, schedule, command FROM cron.job WHERE jobname LIKE '%tweet%';
-
--- Check recent runs
-SELECT * FROM cron.job_run_details ORDER BY start_time DESC LIMIT 5;
-```
-
-### Edge Function Deployment
-
-Deploy the processing Edge Function to self-hosted Supabase:
-
-```bash
-# SSH into the Supabase server
-ssh root@srv1209224.hstgr.cloud
-
-# Deploy the Edge Function
-cd /root/supabase
-docker compose exec -T supabase-edge-functions \
-  deno run --allow-all /home/deno/functions/process-tweets/index.ts
-
-# Or copy the function files and restart
-docker cp supabase/functions/process-tweets supabase-edge-functions:/home/deno/functions/
-docker compose restart supabase-edge-functions
-```
-
-### Manual Trigger
-
-```bash
-curl -X POST https://srv1209224.hstgr.cloud/functions/v1/process-tweets \
-  -H "Authorization: Bearer YOUR_SERVICE_ROLE_KEY" \
-  -H "Content-Type: application/json"
-```
-
-### Vault Secrets
-
-The cron job uses vault secrets for authentication:
-
-```sql
--- Check secrets are configured
-SELECT name FROM vault.secrets WHERE name IN ('tweet_vault_service_key', 'openai_api_key');
-```
+Cron jobs are defined in `/Users/bigmac/projects/personal/self-host/convex/crons.ts` and
+call `tweetVault.processTweetVault` daily at 6 AM UTC.
 
 ## Tech Stack
 
 - **Runtime**: Bun 1.2+, TypeScript 5.7
-- **Database**: Supabase (PostgreSQL + pgvector)
+- **Database**: Convex
 - **Embeddings**: OpenAI text-embedding-3-small (1536d)
-- **Vector Index**: HNSW (m=16, ef_construction=64)
-- **HTML Parsing**: cheerio
-- **Concurrency**: p-limit
+- **Vector Index**: Convex vector index
 - **Validation**: Zod
 - **MCP**: @modelcontextprotocol/sdk
 
@@ -210,9 +173,9 @@ SELECT name FROM vault.secrets WHERE name IN ('tweet_vault_service_key', 'openai
 
 | Variable                    | Required | Description                          |
 | --------------------------- | -------- | ------------------------------------ |
-| `SUPABASE_URL`              | Yes      | Self-hosted Supabase URL             |
-| `SUPABASE_SERVICE_ROLE_KEY` | Yes      | Service role key for database access |
-| `OPENAI_API_KEY`            | Yes      | OpenAI API key for embeddings        |
+| `CONVEX_URL`                | Yes      | Convex deployment URL                |
+| `CONVEX_DEPLOY_KEY`         | No       | Convex CLI deploy/run access         |
+| `OPENAI_API_KEY`            | No       | Set in Convex env for embeddings     |
 
 ## Commands
 

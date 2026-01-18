@@ -13,7 +13,7 @@ import {
   fetchAllLinkMetadata,
 } from "../src/process/links.js";
 import { processAllEmbeddings } from "../src/process/embeddings.js";
-import { recordSync } from "../src/utils/supabase.js";
+import { recordSync } from "../src/utils/convex.js";
 
 config();
 
@@ -85,7 +85,7 @@ async function main() {
 
   // Step 4: Generate embeddings
   console.log("Step 4/4: Generating embeddings...");
-  console.log("  (Using OpenAI text-embedding-3-small)");
+  console.log("  (Running Convex processing pipeline)");
   const embeddingResult = await processAllEmbeddings(3);
   console.log(`  ✅ Embedded ${embeddingResult.tweets.processed} tweets`);
   console.log(`  ✅ Embedded ${embeddingResult.links.processed} links`);

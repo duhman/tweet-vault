@@ -6,7 +6,7 @@ import {
   fetchAllLinkMetadata,
 } from "./process/links.js";
 import { processAllEmbeddings } from "./process/embeddings.js";
-import { getStats, recordSync } from "./utils/supabase.js";
+import { getStats, recordSync } from "./utils/convex.js";
 
 // Load environment variables
 config();
@@ -84,25 +84,20 @@ async function showStats(): Promise<void> {
   if (stats.top_authors && stats.top_authors.length > 0) {
     console.log("\n👤 Top Authors:");
     for (const author of stats.top_authors.slice(0, 5)) {
-      console.log(`  @${author.author_username}: ${author.tweet_count} tweets`);
+      console.log(`  @${author}`);
     }
   }
 
   if (stats.top_domains && stats.top_domains.length > 0) {
     console.log("\n🔗 Top Domains:");
     for (const domain of stats.top_domains.slice(0, 5)) {
-      console.log(`  ${domain.domain}: ${domain.link_count} links`);
+      console.log(`  ${domain}`);
     }
   }
 
   if (stats.last_sync) {
     console.log("\n🔄 Last Sync:");
-    console.log(`  Time: ${stats.last_sync.last_sync_at}`);
-    console.log(`  Tweets added: ${stats.last_sync.tweets_added}`);
-    console.log(`  Links processed: ${stats.last_sync.links_processed}`);
-    console.log(
-      `  Embeddings generated: ${stats.last_sync.embeddings_generated}`,
-    );
+    console.log(`  Time: ${stats.last_sync}`);
   }
 }
 
@@ -149,9 +144,7 @@ Commands:
   help                Show this help message
 
 Environment Variables:
-  SUPABASE_URL              Self-hosted Supabase URL
-  SUPABASE_SERVICE_ROLE_KEY Service role key for database access
-  OPENAI_API_KEY            OpenAI API key for embeddings
+  CONVEX_URL                Convex deployment URL
       `);
   }
 }
