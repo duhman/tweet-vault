@@ -31,5 +31,8 @@ bun.lockb
 # MCP
 .mcp.json
 
+# Gemini
+.gemini/
+
 # Data exports (may contain personal data)
 bookmarks*.json
