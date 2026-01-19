@@ -48,7 +48,7 @@ bun run fetch-links    # Fetch link metadata
 
 ## Database
 
-Uses Convex deployment `https://utmost-gerbil-770.convex.cloud`
+Uses Convex deployment `https://harmless-shrimp-967.convex.cloud`
 
 | Table        | Purpose                                   |
 | ------------ | ----------------------------------------- |
@@ -63,18 +63,12 @@ Uses Convex deployment `https://utmost-gerbil-770.convex.cloud`
 - `tweetVaultQueries.getTweet` - Full tweet with all links
 - `tweetVaultQueries.vaultStats` - Vault statistics
 
-### Backfills (self-host Convex)
+### Backfills / Full Sync (Convex)
 
-Run these from `/Users/bigmac/projects/personal/self-host`:
+Pull everything (ignore checkpoint) and process embeddings:
 
 ```bash
-CONVEX_DEPLOY_KEY="$(cat .convex-deploy-key)" \
-CONVEX_DEPLOYMENT=utmost-gerbil-770 \
-node scripts/run_tweet_links_backfill.mjs --limit 50
-
-CONVEX_DEPLOY_KEY="$(cat .convex-deploy-key)" \
-CONVEX_DEPLOYMENT=utmost-gerbil-770 \
-node scripts/run_tweet_vault_processing.mjs --limit 50
+npx convex run tweetVault:syncTweetVault '{"fetchAll": true, "includeRaw": false, "ignoreCheckpoint": true}'
 ```
 
 ## MCP Server
@@ -116,7 +110,7 @@ Add to `~/.mcp.json`:
         "/Users/bigmac/projects/personal/tweet-vault/mcp-server/index.ts"
       ],
       "env": {
-        "CONVEX_URL": "https://utmost-gerbil-770.convex.cloud"
+        "CONVEX_URL": "https://harmless-shrimp-967.convex.cloud"
       }
     }
   }
@@ -171,8 +165,10 @@ claude mcp add playwright -- npx @playwright/mcp@latest
 
 ## Daily Sync (Convex cron)
 
-Cron jobs are defined in `/Users/bigmac/projects/personal/self-host/convex/crons.ts` and
-call `tweetVault.processTweetVault` daily at 6 AM UTC.
+Cron jobs are defined in `convex/crons.ts` and call `tweetVault.syncTweetVault`
+daily at 6 AM UTC. The sync fetches recent bookmarks, extracts links, fetches
+metadata, and generates embeddings. A checkpoint prevents reprocessing older
+bookmarks.
 
 ## Tech Stack
 
@@ -188,8 +184,9 @@ call `tweetVault.processTweetVault` daily at 6 AM UTC.
 | Variable                    | Required | Description                          |
 | --------------------------- | -------- | ------------------------------------ |
 | `CONVEX_URL`                | Yes      | Convex deployment URL                |
-| `CONVEX_DEPLOY_KEY`         | No       | Convex CLI deploy/run access         |
 | `OPENAI_API_KEY`            | No       | Set in Convex env for embeddings     |
+| `TWITTER_AUTH_TOKEN`        | No       | Set in Convex env for bookmark sync  |
+| `TWITTER_CT0`               | No       | Set in Convex env for bookmark sync  |
 
 ## Commands
 
@@ -203,6 +200,16 @@ call `tweetVault.processTweetVault` daily at 6 AM UTC.
 | `bun run mcp`           | Run MCP server standalone             |
 | `bun run dev`           | Development mode (watch)              |
 | `bun run typecheck`     | Type checking                         |
+
+### Convex Actions
+
+```bash
+# Sync recent bookmarks (uses Convex env vars)
+npx convex run tweetVault:syncTweetVault '{"count": 50}'
+
+# Full sync (ignore checkpoint)
+npx convex run tweetVault:syncTweetVault '{"fetchAll": true, "includeRaw": false, "ignoreCheckpoint": true}'
+```
 
 ## Bird Integration
 

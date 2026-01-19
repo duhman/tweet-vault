@@ -39,7 +39,7 @@ async function getClient(): Promise<TwitterClient> {
 
   if (authToken && ct0) {
     return new TwitterClient({
-      cookies: { auth_token: authToken, ct0 },
+      cookies: { authToken, ct0 },
     });
   }
 

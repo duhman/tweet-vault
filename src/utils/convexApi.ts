@@ -15,5 +15,6 @@ export const api: any = {
   },
   tweetVault: {
     processTweetVault: "tweetVault:processTweetVault",
+    syncTweetVault: "tweetVault:syncTweetVault",
   },
 };

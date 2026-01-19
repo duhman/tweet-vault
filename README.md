@@ -33,7 +33,7 @@ Ever bookmark interesting tweets and never find them again? Tweet Vault makes yo
 ### Prerequisites
 
 - [Bun](https://bun.sh) 1.2+
-- [Convex](https://docs.convex.dev) deployment (self-host project)
+- [Convex](https://docs.convex.dev) deployment (this repo)
 - [OpenAI API key](https://platform.openai.com/api-keys) (set in Convex env)
 - Twitter/X account with bookmarks
 
@@ -52,29 +52,29 @@ cp .env.example .env
 # Edit .env with your credentials
 ```
 
-### Database Setup
+### Database Setup (Convex)
 
-Convex schema and cron jobs live in `/Users/bigmac/projects/personal/self-host/convex/`.
-Deploy with:
+Convex functions live in this repo under `convex/`.
 
 ```bash
-cd /Users/bigmac/projects/personal/self-host
-CONVEX_DEPLOY_KEY="$(cat .convex-deploy-key)" npx convex deploy
+# Create a dev deployment and generate _generated types
+npx convex dev
 ```
 
-### Backfills (self-host Convex)
-
-For existing data, run these from the self-host repo:
+Set required Convex env vars (on your deployment):
 
 ```bash
-cd /Users/bigmac/projects/personal/self-host
-CONVEX_DEPLOY_KEY="$(cat .convex-deploy-key)" \
-CONVEX_DEPLOYMENT=utmost-gerbil-770 \
-node scripts/run_tweet_links_backfill.mjs --limit 50
+npx convex env set OPENAI_API_KEY "<your key>"
+npx convex env set TWITTER_AUTH_TOKEN "<your auth_token>"
+npx convex env set TWITTER_CT0 "<your ct0>"
+```
 
-CONVEX_DEPLOY_KEY="$(cat .convex-deploy-key)" \
-CONVEX_DEPLOYMENT=utmost-gerbil-770 \
-node scripts/run_tweet_vault_processing.mjs --limit 50
+### Backfills / Full Sync
+
+To pull everything (ignoring the checkpoint) and process embeddings:
+
+```bash
+npx convex run tweetVault:syncTweetVault '{"fetchAll": true, "includeRaw": false, "ignoreCheckpoint": true}'
 ```
 
 ### Import Your Bookmarks
@@ -113,7 +113,7 @@ Add to your Claude MCP configuration (`~/.mcp.json` or Claude Desktop settings):
       "command": "bun",
       "args": ["run", "/path/to/tweet-vault/mcp-server/index.ts"],
       "env": {
-        "CONVEX_URL": "https://utmost-gerbil-770.convex.cloud"
+        "CONVEX_URL": "https://your-deployment.convex.cloud"
       }
     }
   }
@@ -156,11 +156,10 @@ Once configured, ask Claude things like:
 
 | Variable             | Required | Description                                   |
 | -------------------- | -------- | --------------------------------------------- |
-| `CONVEX_URL`         | Yes      | Convex deployment URL                         |
-| `CONVEX_DEPLOY_KEY`  | No       | Needed for CLI deploy/run in self-host project|
+| `CONVEX_URL`         | Yes      | Convex deployment URL (MCP + local CLI)       |
 | `OPENAI_API_KEY`     | No       | Set in Convex env for embeddings              |
-| `TWITTER_AUTH_TOKEN`        | No       | Twitter session cookie (for direct API) |
-| `TWITTER_CT0`               | No       | Twitter CSRF token (for direct API)     |
+| `TWITTER_AUTH_TOKEN` | No       | Set in Convex env for bookmark sync           |
+| `TWITTER_CT0`        | No       | Set in Convex env for bookmark sync           |
 
 ## Database Schema
 
@@ -202,7 +201,9 @@ See [docs/EXTRACTION.md](docs/EXTRACTION.md) for step-by-step instructions.
 ## Automated Daily Sync
 
 Automated sync runs via Convex cron in `convex/crons.ts` (6 AM UTC), calling
-`tweetVault.processTweetVault`.
+`tweetVault.syncTweetVault`. It fetches recent bookmarks, extracts links,
+fetches metadata, and generates embeddings. It uses a checkpoint to avoid
+reprocessing older bookmarks.
 
 ## Tech Stack
 
