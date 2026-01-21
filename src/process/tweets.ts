@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { Tweet, upsertTweets } from "../utils/convex.js";
+import { Tweet, upsertTweets } from "../utils/supabase.js";
 
 // Schema for Twitter GraphQL bookmark response (simplified)
 const TweetDataSchema = z.object({

@@ -15,7 +15,7 @@ import {
   fetchAllLinkMetadata,
 } from "../src/process/links.js";
 import { processAllEmbeddings } from "../src/process/embeddings.js";
-import { recordSync } from "../src/utils/convex.js";
+import { recordSync } from "../src/utils/supabase.js";
 
 config();
 

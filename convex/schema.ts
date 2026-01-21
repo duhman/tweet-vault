@@ -20,6 +20,7 @@ export default defineSchema({
   })
     .index("by_legacy_id", ["id"])
     .index("by_tweet_id", ["tweet_id"])
+    .index("by_author", ["author_username"])
     .searchIndex("search_content", { searchField: "content" })
     .vectorIndex("by_embedding", {
       vectorField: "embedding",

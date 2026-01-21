@@ -1,231 +1,165 @@
-# Tweet Vault - Twitter Bookmarks Intelligence System
+# CLAUDE.md
 
-Capture Twitter/X bookmarked tweets, extract links and content, generate embeddings, and make them searchable via semantic search.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Status: ✅ Operational (Convex)
+## Overview
 
-| Metric               | Value                                 |
-| -------------------- | ------------------------------------- |
-| Tweets imported      | 300                                   |
-| Embeddings generated | 300 (100%)                            |
-| Daily sync           | 6 AM UTC via Convex cron              |
-| MCP Server           | Configured in ~/.claude/settings.json |
+Tweet Vault is a Twitter/X bookmarks intelligence system. It captures bookmarked tweets, extracts links, generates embeddings, and enables semantic search via MCP server.
 
-## Quick Start
+**Status**: Operational on Convex (`https://harmless-shrimp-967.convex.cloud`)
+
+## Development Commands
 
 ```bash
 # Install dependencies
 bun install
 
-# Copy and configure environment
-cp .env.example .env
-# Edit .env with your credentials
+# Type checking
+bun run typecheck
 
-# Import tweets from JSON export
+# Run MCP server locally
+bun run mcp
+
+# Sync bookmarks from Twitter (requires Safari login)
+bun run sync              # Latest 50
+bun run sync:all          # All bookmarks
+
+# Import from JSON file
 bun run import path/to/bookmarks.json
 
-# Or run individual steps
-bun run process        # Generate embeddings
-bun run fetch-links    # Fetch link metadata
+# Convex development (generates types, hot reload)
+npx convex dev
+
+# Run Convex actions directly
+npx convex run tweetVault:syncTweetVault '{"count": 50}'
+npx convex run tweetVault:processTweetVault '{}'
+
+# Full backfill (ignores checkpoint)
+npx convex run tweetVault:syncTweetVault '{"fetchAll": true, "ignoreCheckpoint": true}'
 ```
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                          Data Ingestion                                  │
-├─────────────────────────────────────────────────────────────────────────┤
-│  Bird CLI (NEW)  ──┐                                                     │
-│  - npm run sync    │                                                     │
-│  - Auto-extract    ├──→ Processing Pipeline ──→ Convex                  │
-│                    │    (dedupe, links,        │                         │
-│  Manual Export ────┘     embeddings)           ↓                         │
-│  - JSON file                              MCP Server → Claude            │
-└─────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│  Data Sources                                                    │
+│  ├─ Bird CLI (@steipete/bird) → Safari cookie extraction        │
+│  └─ JSON export (manual)                                        │
+│                         ↓                                        │
+│  Processing Pipeline (Convex actions)                           │
+│  ├─ Fetch bookmarks from Twitter GraphQL                        │
+│  ├─ Dedupe against existing tweet_ids                           │
+│  ├─ Extract links from tweet content                            │
+│  ├─ Fetch link metadata (og:title, og:description)              │
+│  └─ Generate embeddings (OpenAI text-embedding-3-small)         │
+│                         ↓                                        │
+│  Convex Database                                                 │
+│  ├─ tweets (1536d embeddings, vector index)                     │
+│  ├─ links (1536d embeddings, vector index)                      │
+│  └─ sync_state (checkpoint tracking)                            │
+│                         ↓                                        │
+│  MCP Server (Supabase)                                           │
+│  ├─ Database: brawengrbiuvnmsyqhoe.supabase.co (tweet_vault)    │
+│  ├─ Uses: @supabase/supabase-js, OpenAI embeddings              │
+│  └─ 7 tools: search_tweets, search_links, get_tweet, etc.       │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-**Recommended**: Use `bun run sync` to fetch bookmarks directly from Twitter via Bird.
+**Note**: The sync pipeline uses Convex backend, while the MCP server queries Supabase directly for better performance with Claude Code.
 
-## Database
+**Daily Sync**: Convex cron at 6 AM UTC (`convex/crons.ts`) calls `syncTweetVault`.
 
-Uses Convex deployment `https://harmless-shrimp-967.convex.cloud`
+## Key Files
 
-| Table        | Purpose                                   |
-| ------------ | ----------------------------------------- |
-| `tweets`     | Bookmarked tweets with 1536d embeddings   |
-| `links`      | Extracted URLs with metadata + embeddings |
-| `sync_state` | Sync history and stats                    |
+| Path                            | Purpose                                                    |
+| ------------------------------- | ---------------------------------------------------------- |
+| `convex/schema.ts`              | Database schema (tweets, links, sync_state, twitter_likes) |
+| `convex/tweetVault.ts`          | Main sync action - fetches bookmarks, runs pipeline        |
+| `convex/tweetVaultQueries.ts`   | Search actions (vector search for tweets/links)            |
+| `convex/tweetVaultMutations.ts` | CRUD mutations for tweets/links                            |
+| `convex/tweetVaultInternal.ts`  | Internal queries (for actions to call)                     |
+| `convex/lib/embeddings.ts`      | OpenAI embedding helper with retry logic                   |
+| `convex/crons.ts`               | Daily sync schedule                                        |
+| `mcp-server/index.ts`           | MCP server exposing 7 tools to Claude                      |
+| `scripts/sync-from-bird.ts`     | Local CLI for Bird-based sync                              |
+| `src/process/*.ts`              | Local processing helpers (tweets, links, embeddings)       |
+| `src/utils/convex.ts`           | Convex HTTP client utilities                               |
 
-### Key Functions (Convex)
+## Convex Function Organization
 
-- `tweetVaultQueries.searchTweets` - Semantic tweet search
-- `tweetVaultQueries.searchLinks` - Semantic link search
-- `tweetVaultQueries.getTweet` - Full tweet with all links
-- `tweetVaultQueries.vaultStats` - Vault statistics
+- **Actions** (can call external APIs, run mutations/queries):
+  - `tweetVault.syncTweetVault` - Main orchestrator
+  - `tweetVault.processTweetVault` - Process embeddings only
+  - `tweetVaultQueries.searchTweets/searchLinks` - Vector search
 
-### Backfills / Full Sync (Convex)
+- **Mutations** (write to database):
+  - `tweetVaultMutations.upsertTweets`
+  - `tweetVaultLinks.backfillLinks`
 
-Pull everything (ignore checkpoint) and process embeddings:
+- **Queries** (read from database):
+  - `tweetVaultQueries.getTweet`, `vaultStats`, `listAuthors`
 
-```bash
-npx convex run tweetVault:syncTweetVault '{"fetchAll": true, "includeRaw": false, "ignoreCheckpoint": true}'
-```
+- **Internal** (only callable from actions):
+  - `tweetVaultInternal.*` - Helper queries/mutations
 
-## MCP Server
+## MCP Server Tools
 
-The MCP server exposes these tools to Claude:
-
-| Tool                   | Description                                |
-| ---------------------- | ------------------------------------------ |
-| `search_tweets`        | Semantic search over bookmarked tweets     |
-| `search_links`         | Semantic search over extracted links       |
-| `get_tweet`            | Get specific tweet by ID with full details |
-| `list_links_by_domain` | Browse links by domain                     |
-| `find_related`         | Find tweets and links for a topic          |
-| `vault_stats`          | Show vault statistics                      |
-| `list_authors`         | List tweets from specific author           |
-
-## Alternative: Local Database Search
-
-The `local-db-search` skill provides fast local queries if tweet-vault data is synced to local PostgreSQL:
-
-- **Performance**: <40ms (faster than MCP server)
-- **Offline**: Works without network
-- **Database**: localhost:5432, database `elaway_kb`
-- **Usage**: See `/Users/bigmac/agents/skills/local-db-search/SKILL.md`
-
-**Note**: tweet-vault MCP provides semantic search (embeddings). Local-db-search provides fast keyword search.
-
-### Setup MCP Server
-
-Add to `~/.mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "tweet-vault": {
-      "command": "bun",
-      "args": [
-        "run",
-        "/Users/bigmac/projects/personal/tweet-vault/mcp-server/index.ts"
-      ],
-      "env": {
-        "CONVEX_URL": "https://harmless-shrimp-967.convex.cloud"
-      }
-    }
-  }
-}
-```
-
-## Extracting Bookmarks
-
-See [docs/EXTRACTION.md](docs/EXTRACTION.md) for detailed instructions.
-
-### Quick Start Options
-
-| Method                 | Best For                         | Auth Required           |
-| ---------------------- | -------------------------------- | ----------------------- |
-| **Playwright MCP**     | Automated extraction with Claude | Yes (manual login)      |
-| **Browser Extension**  | Easy one-time export             | Yes (already logged in) |
-| **DevTools Intercept** | Power users, complete data       | Yes                     |
-
-### Option 1: Playwright MCP (Recommended)
-
-```bash
-# Install Playwright MCP (already done)
-claude mcp add playwright -- npx @playwright/mcp@latest
-
-# Ask Claude to extract bookmarks
-# "Use Playwright to extract my Twitter bookmarks"
-```
-
-### Option 2: Claude-in-Chrome (Used for initial import)
-
-1. Use Claude Code with claude-in-chrome MCP
-2. Navigate to x.com/i/bookmarks
-3. Run extraction script in browser console (scroll + capture loop)
-4. Download JSON via blob URL
-5. Transform with `npx tsx scripts/transform-bookmarks.ts`
-
-### Option 3: Twitter Web Exporter (Browser Extension)
-
-1. Install [twitter-web-exporter](https://github.com/prinsss/twitter-web-exporter)
-2. Go to x.com/i/bookmarks
-3. Scroll through all bookmarks
-4. Export as JSON
-
-## Processing Pipeline
-
-1. **Parse**: Read exported JSON, validate with Zod schemas
-2. **Deduplicate**: Check against existing tweet_ids in database
-3. **Extract Links**: Parse URLs from tweet content and entities
-4. **Fetch Metadata**: GET each URL, extract og:title, og:description, og:image
-5. **Generate Embeddings**: OpenAI text-embedding-3-small (1536d) in Convex
-6. **Store**: Upsert to Convex with vector indexes
-
-## Daily Sync (Convex cron)
-
-Cron jobs are defined in `convex/crons.ts` and call `tweetVault.syncTweetVault`
-daily at 6 AM UTC. The sync fetches recent bookmarks, extracts links, fetches
-metadata, and generates embeddings. A checkpoint prevents reprocessing older
-bookmarks.
-
-## Tech Stack
-
-- **Runtime**: Bun 1.2+, TypeScript 5.7
-- **Database**: Convex
-- **Embeddings**: OpenAI text-embedding-3-small (1536d)
-- **Vector Index**: Convex vector index
-- **Validation**: Zod
-- **MCP**: @modelcontextprotocol/sdk
+| Tool                   | Description                            |
+| ---------------------- | -------------------------------------- |
+| `search_tweets`        | Semantic search over bookmarked tweets |
+| `search_links`         | Semantic search over extracted links   |
+| `get_tweet`            | Get specific tweet by ID with links    |
+| `list_links_by_domain` | Browse links by domain                 |
+| `find_related`         | Find tweets and links for a topic      |
+| `vault_stats`          | Vault statistics                       |
+| `list_authors`         | List tweets from specific author       |
 
 ## Environment Variables
 
-| Variable                    | Required | Description                          |
-| --------------------------- | -------- | ------------------------------------ |
-| `CONVEX_URL`                | Yes      | Convex deployment URL                |
-| `OPENAI_API_KEY`            | No       | Set in Convex env for embeddings     |
-| `TWITTER_AUTH_TOKEN`        | No       | Set in Convex env for bookmark sync  |
-| `TWITTER_CT0`               | No       | Set in Convex env for bookmark sync  |
+### CLI Operations (.env)
 
-## Commands
+- `CONVEX_URL` - Convex deployment URL (required for sync commands)
 
-| Command                 | Description                           |
-| ----------------------- | ------------------------------------- |
-| `bun run sync`          | Sync bookmarks from Twitter via Bird  |
-| `bun run sync:all`      | Sync ALL bookmarks (may take a while) |
-| `bun run import <file>` | Import tweets from JSON file          |
-| `bun run process`       | Generate pending embeddings           |
-| `bun run fetch-links`   | Fetch link metadata                   |
-| `bun run mcp`           | Run MCP server standalone             |
-| `bun run dev`           | Development mode (watch)              |
-| `bun run typecheck`     | Type checking                         |
+### Convex Dashboard (set via `npx convex env set`)
 
-### Convex Actions
+- `OPENAI_API_KEY` - For embeddings
+- `TWITTER_AUTH_TOKEN` - For bookmark sync
+- `TWITTER_CT0` - For bookmark sync
 
-```bash
-# Sync recent bookmarks (uses Convex env vars)
-npx convex run tweetVault:syncTweetVault '{"count": 50}'
+### MCP Server (configured in MCP client configs)
 
-# Full sync (ignore checkpoint)
-npx convex run tweetVault:syncTweetVault '{"fetchAll": true, "includeRaw": false, "ignoreCheckpoint": true}'
-```
+| Variable                     | Value                                      |
+| ---------------------------- | ------------------------------------------ |
+| `SUPABASE_URL`               | `https://brawengrbiuvnmsyqhoe.supabase.co` |
+| `SUPABASE_SERVICE_ROLE_KEY`  | `${PRIVATEBASE_SERVICE_ROLE_KEY}`          |
+| `OPENAI_API_KEY`             | `${OPENAI_API_KEY}`                        |
+| `SUPABASE_SCHEMA` (optional) | `tweet_vault` (default)                    |
 
-## Bird Integration
+## Common Tasks
 
-Tweet Vault now integrates with [Bird CLI](https://github.com/steipete/bird) for automated bookmark syncing:
+### Adding a new MCP tool
 
-```bash
-# Sync latest 50 bookmarks (default)
-bun run sync
+1. Add tool definition to `tools` array in `mcp-server/index.ts`
+2. Add handler function (e.g., `handleNewTool`)
+3. Add case to switch statement in `CallToolRequestSchema` handler
+4. If needed, add Convex query/action in `convex/tweetVaultQueries.ts`
 
-# Sync all bookmarks
-bun run sync:all
+### Modifying the schema
 
-# Sync specific count
-bun run scripts/sync-from-bird.ts --count=100
-```
+1. Edit `convex/schema.ts`
+2. Run `npx convex dev` to apply changes
+3. Update relevant mutations/queries
 
-**Authentication**: Bird extracts cookies from Safari automatically. Must be logged into Twitter in Safari.
+### Adding a new processing step
 
-**Companion MCP**: The `bird` MCP server provides real-time read/write access (post tweets, reply, search). Tweet Vault provides semantic search over stored bookmarks.
+1. Add logic to `runProcessingPipeline` in `convex/tweetVault.ts`
+2. Add any needed internal queries/mutations to `convex/tweetVaultInternal.ts`
+
+## Tech Stack
+
+- **Runtime**: Bun 1.2+
+- **Database**: Convex (vector indexes for semantic search)
+- **Embeddings**: OpenAI text-embedding-3-small (1536d)
+- **Twitter Integration**: @steipete/bird (GraphQL API via Safari cookies)
+- **MCP**: @modelcontextprotocol/sdk
+- **Validation**: Zod

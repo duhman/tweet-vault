@@ -138,3 +138,69 @@ export const getLatestSyncState = internalQuery({
     return ctx.db.query("sync_state").order("desc").first();
   },
 });
+
+// Paginated stats helpers - each stays under 16MB limit
+export const countTweetsBatch = internalQuery({
+  args: { cursor: v.optional(v.string()), batchSize: v.number() },
+  handler: async (ctx, args) => {
+    const query = ctx.db.query("tweets").order("asc");
+    const batch = args.cursor
+      ? await query
+          .filter((q) => q.gt(q.field("_id"), args.cursor!))
+          .take(args.batchSize)
+      : await query.take(args.batchSize);
+
+    let count = 0;
+    let withEmbedding = 0;
+    const authors = new Map<string, number>();
+
+    for (const tweet of batch) {
+      count++;
+      if (tweet.embedding) withEmbedding++;
+      authors.set(
+        tweet.author_username,
+        (authors.get(tweet.author_username) ?? 0) + 1,
+      );
+    }
+
+    return {
+      count,
+      withEmbedding,
+      authors: Object.fromEntries(authors),
+      nextCursor:
+        batch.length === args.batchSize ? batch[batch.length - 1]._id : null,
+    };
+  },
+});
+
+export const countLinksBatch = internalQuery({
+  args: { cursor: v.optional(v.string()), batchSize: v.number() },
+  handler: async (ctx, args) => {
+    const query = ctx.db.query("links").order("asc");
+    const batch = args.cursor
+      ? await query
+          .filter((q) => q.gt(q.field("_id"), args.cursor!))
+          .take(args.batchSize)
+      : await query.take(args.batchSize);
+
+    let count = 0;
+    let withEmbedding = 0;
+    const domains = new Map<string, number>();
+
+    for (const link of batch) {
+      count++;
+      if (link.embedding) withEmbedding++;
+      if (link.domain) {
+        domains.set(link.domain, (domains.get(link.domain) ?? 0) + 1);
+      }
+    }
+
+    return {
+      count,
+      withEmbedding,
+      domains: Object.fromEntries(domains),
+      nextCursor:
+        batch.length === args.batchSize ? batch[batch.length - 1]._id : null,
+    };
+  },
+});
