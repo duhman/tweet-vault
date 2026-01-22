@@ -139,7 +139,9 @@ Deno.serve(async (req) => {
       );
     }
 
-    const supabase = createClient(supabaseUrl, supabaseKey);
+    const supabase = createClient(supabaseUrl, supabaseKey, {
+      db: { schema: "tweet_vault" },
+    });
     const result: ProcessResult = {
       tweets_embedded: 0,
       links_metadata_fetched: 0,

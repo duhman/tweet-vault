@@ -16,8 +16,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0",
-    "@steipete/bird": "latest",
+    "@modelcontextprotocol/sdk": "^1.25.3",
+    "@steipete/bird": "^0.8.0",
     "@supabase/supabase-js": "^2.49.4",
     "dotenv": "^17.2.3",
     "openai": "^4.78.1",

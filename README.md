@@ -10,21 +10,29 @@ Ever bookmark interesting tweets and never find them again? Tweet Vault makes yo
 - 🔗 **Link Extraction** — Automatically extracts and indexes URLs with metadata
 - 🤖 **Claude MCP Integration** — Query your bookmarks directly from Claude
 - 🐦 **Bird CLI Integration** — Sync bookmarks automatically from Twitter
-- ⏰ **Daily Sync** — Automatically processes new bookmarks via Convex cron
+- ⏰ **Daily Processing** — Automatically processes embeddings via Supabase pg_cron
 - 🧠 **Smart Embeddings** — OpenAI text-embedding-3-small (1536 dimensions)
-- ⚡ **Fast Vector Search** — Convex vector index
+- ⚡ **Fast Vector Search** — pgvector with HNSW indexes
 
 ## Architecture
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
-│                        Data Ingestion                          │
-├────────────────────────────────────────────────────────────────┤
-│  Bird CLI ────┐                                                │
-│  (automated)  │                                                │
-│               ├──→ Processing Pipeline ──→ Convex              │
-│  JSON Export ─┘    (dedupe, links,              ↓              │
-│  (manual)          embeddings)           MCP Server → Claude   │
+│  Data Ingestion (CLI)                                          │
+│  bun run sync ─► Bird CLI ─► Twitter GraphQL ─► Supabase       │
+│                                                                │
+│  Processing (Edge Function - daily 6 AM UTC via pg_cron)       │
+│  ├─ Generate tweet embeddings (batch 20)                       │
+│  ├─ Fetch link metadata (batch 10)                             │
+│  └─ Generate link embeddings (batch 10)                        │
+│                                                                │
+│  Supabase Database (tweet_vault schema)                        │
+│  ├─ tweets (1536d embeddings, HNSW vector index)               │
+│  ├─ links (1536d embeddings, HNSW vector index)                │
+│  └─ sync_state (checkpoint tracking)                           │
+│                                                                │
+│  MCP Server ─► Claude                                          │
+│  └─ 7 tools: search_tweets, search_links, get_tweet, etc.      │
 └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -33,8 +41,8 @@ Ever bookmark interesting tweets and never find them again? Tweet Vault makes yo
 ### Prerequisites
 
 - [Bun](https://bun.sh) 1.2+
-- [Convex](https://docs.convex.dev) deployment (this repo)
-- [OpenAI API key](https://platform.openai.com/api-keys) (set in Convex env)
+- [Supabase](https://supabase.com) project with pgvector extension
+- [OpenAI API key](https://platform.openai.com/api-keys)
 - Twitter/X account with bookmarks
 
 ### Installation
@@ -52,29 +60,15 @@ cp .env.example .env
 # Edit .env with your credentials
 ```
 
-### Database Setup (Convex)
+### Database Setup (Supabase)
 
-Convex functions live in this repo under `convex/`.
-
-```bash
-# Create a dev deployment and generate _generated types
-npx convex dev
-```
-
-Set required Convex env vars (on your deployment):
+1. Create a Supabase project
+2. Run migrations from `supabase/migrations/` in order
+3. Deploy the Edge Function:
 
 ```bash
-npx convex env set OPENAI_API_KEY "<your key>"
-npx convex env set TWITTER_AUTH_TOKEN "<your auth_token>"
-npx convex env set TWITTER_CT0 "<your ct0>"
-```
-
-### Backfills / Full Sync
-
-To pull everything (ignoring the checkpoint) and process embeddings:
-
-```bash
-npx convex run tweetVault:syncTweetVault '{"fetchAll": true, "includeRaw": false, "ignoreCheckpoint": true}'
+supabase functions deploy process-tweets --project-ref <your-project-ref>
+supabase secrets set OPENAI_API_KEY="<your-key>" --project-ref <your-project-ref>
 ```
 
 ### Import Your Bookmarks
@@ -82,9 +76,6 @@ npx convex run tweetVault:syncTweetVault '{"fetchAll": true, "includeRaw": false
 **Option 1: Bird CLI (Recommended)**
 
 ```bash
-# Install Bird CLI globally
-npm install -g @steipete/bird
-
 # Sync latest bookmarks (requires Safari login to Twitter)
 bun run sync
 
@@ -100,11 +91,9 @@ bun run sync:all
 bun run import path/to/bookmarks.json
 ```
 
-See [docs/EXTRACTION.md](docs/EXTRACTION.md) for detailed extraction methods.
-
 ## MCP Server Setup
 
-Add to your Claude MCP configuration (`~/.mcp.json` or Claude Desktop settings):
+Add to your Claude MCP configuration (`~/.claude.json` or Claude Desktop settings):
 
 ```json
 {
@@ -113,7 +102,9 @@ Add to your Claude MCP configuration (`~/.mcp.json` or Claude Desktop settings):
       "command": "bun",
       "args": ["run", "/path/to/tweet-vault/mcp-server/index.ts"],
       "env": {
-        "CONVEX_URL": "https://your-deployment.convex.cloud"
+        "SUPABASE_URL": "https://your-project.supabase.co",
+        "SUPABASE_SERVICE_ROLE_KEY": "your-service-role-key",
+        "OPENAI_API_KEY": "your-openai-key"
       }
     }
   }
@@ -148,22 +139,29 @@ Once configured, ask Claude things like:
 | `bun run sync`          | Sync bookmarks from Twitter via Bird CLI |
 | `bun run sync:all`      | Sync ALL bookmarks (may take a while)    |
 | `bun run import <file>` | Import tweets from JSON export           |
-| `bun run process`       | Generate pending embeddings (Convex)     |
 | `bun run mcp`           | Run MCP server standalone                |
 | `bun run typecheck`     | TypeScript type checking                 |
 
 ## Environment Variables
 
-| Variable             | Required | Description                                   |
-| -------------------- | -------- | --------------------------------------------- |
-| `CONVEX_URL`         | Yes      | Convex deployment URL (MCP + local CLI)       |
-| `OPENAI_API_KEY`     | No       | Set in Convex env for embeddings              |
-| `TWITTER_AUTH_TOKEN` | No       | Set in Convex env for bookmark sync           |
-| `TWITTER_CT0`        | No       | Set in Convex env for bookmark sync           |
+### Local CLI (.env)
+
+| Variable                    | Required | Description                          |
+| --------------------------- | -------- | ------------------------------------ |
+| `SUPABASE_URL`              | Yes      | Supabase project URL                 |
+| `SUPABASE_SERVICE_ROLE_KEY` | Yes      | Supabase service role key            |
+| `OPENAI_API_KEY`            | Yes      | OpenAI API key for embeddings        |
+| `SUPABASE_SCHEMA`           | No       | Schema name (default: `tweet_vault`) |
+
+### Edge Function (Supabase Dashboard)
+
+| Variable         | Description              |
+| ---------------- | ------------------------ |
+| `OPENAI_API_KEY` | For embedding generation |
 
 ## Database Schema
 
-### Tables
+### Tables (tweet_vault schema)
 
 | Table        | Purpose                                        |
 | ------------ | ---------------------------------------------- |
@@ -171,47 +169,46 @@ Once configured, ask Claude things like:
 | `links`      | Extracted URLs with og:tags and embeddings     |
 | `sync_state` | Sync history and statistics                    |
 
-### Key Functions (Convex)
+### RPC Functions
 
-- `tweetVaultQueries.searchTweets` — Semantic tweet search
-- `tweetVaultQueries.searchLinks` — Semantic link search
-- `tweetVaultQueries.getTweet` — Full tweet with extracted links
-- `tweetVaultQueries.vaultStats` — Vault statistics
+- `search_tweets` — Semantic tweet search via pgvector
+- `search_links` — Semantic link search via pgvector
 
 ## Processing Pipeline
 
-1. **Parse** — Read exported JSON, validate with Zod schemas
-2. **Deduplicate** — Check against existing tweet_ids
-3. **Extract Links** — Parse URLs from tweet content and entities
-4. **Fetch Metadata** — GET each URL, extract og:title, og:description
-5. **Generate Embeddings** — OpenAI text-embedding-3-small (1536d)
-6. **Store** — Upsert to Convex with vector indexes
+1. **Fetch** — Bird CLI fetches bookmarks from Twitter GraphQL API
+2. **Parse** — Validate with Zod schemas, transform to database format
+3. **Deduplicate** — Check against existing tweet_ids
+4. **Store** — Upsert to Supabase
+5. **Extract Links** — Parse URLs from tweet content (Edge Function)
+6. **Fetch Metadata** — GET each URL, extract og:title, og:description
+7. **Generate Embeddings** — OpenAI text-embedding-3-small (1536d)
 
-## Bookmark Extraction Methods
+## Automated Daily Processing
 
-| Method                 | Best For          | Auth Required |
-| ---------------------- | ----------------- | ------------- |
-| **Bird CLI**           | Automated sync    | Safari login  |
-| **Browser Extension**  | One-time export   | Logged in     |
-| **DevTools Intercept** | Power users       | Logged in     |
-| **Playwright MCP**     | Claude automation | Manual login  |
+The Edge Function `process-tweets` runs daily at 6 AM UTC via Supabase pg_cron:
 
-See [docs/EXTRACTION.md](docs/EXTRACTION.md) for step-by-step instructions.
+- Generates embeddings for tweets without them (batch of 20)
+- Fetches metadata for links without it (batch of 10)
+- Generates embeddings for links with metadata (batch of 10)
 
-## Automated Daily Sync
+Manual trigger:
 
-Automated sync runs via Convex cron in `convex/crons.ts` (6 AM UTC), calling
-`tweetVault.syncTweetVault`. It fetches recent bookmarks, extracts links,
-fetches metadata, and generates embeddings. It uses a checkpoint to avoid
-reprocessing older bookmarks.
+```bash
+curl -X POST "https://your-project.supabase.co/functions/v1/process-tweets" \
+  -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
 
 ## Tech Stack
 
 - **Runtime**: [Bun](https://bun.sh) 1.2+
 - **Language**: TypeScript 5.7
-- **Database**: [Convex](https://docs.convex.dev)
+- **Database**: [Supabase](https://supabase.com) (PostgreSQL + pgvector)
+- **Processing**: Supabase Edge Functions (Deno) + pg_cron
 - **Embeddings**: OpenAI text-embedding-3-small (1536d)
-- **Vector Index**: Convex vector index
+- **Vector Index**: pgvector HNSW
 - **Validation**: [Zod](https://zod.dev)
 - **MCP**: [@modelcontextprotocol/sdk](https://github.com/modelcontextprotocol/sdk)
 - **Twitter Sync**: [Bird CLI](https://github.com/steipete/bird)

@@ -6,7 +6,7 @@ import {
   fetchAllLinkMetadata,
 } from "./process/links.js";
 import { processAllEmbeddings } from "./process/embeddings.js";
-import { getStats, recordSync } from "./utils/convex.js";
+import { getStats, recordSync } from "./utils/supabase.js";
 
 // Load environment variables
 config();
@@ -144,7 +144,9 @@ Commands:
   help                Show this help message
 
 Environment Variables:
-  CONVEX_URL                Convex deployment URL
+  SUPABASE_URL              Supabase project URL
+  SUPABASE_SERVICE_ROLE_KEY Supabase service role key
+  OPENAI_API_KEY            OpenAI API key for embeddings
       `);
   }
 }
