@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-Tweet Vault is a Twitter/X bookmarks intelligence system. It captures bookmarked tweets, extracts links, generates embeddings, and enables semantic search via MCP server.
+Tweet Vault is a Twitter/X saved-tweet intelligence system. It captures bookmarks and likes into one canonical tweet model, extracts links, generates embeddings, and enables semantic search via MCP server.
 
 **Status**: Operational on Supabase Cloud (`brawengrbiuvnmsyqhoe.supabase.co`, schema: `tweet_vault`)
 
@@ -20,9 +20,11 @@ bun run typecheck
 # Run MCP server locally
 bun run mcp
 
-# Sync bookmarks from Twitter (requires Safari login)
-bun run sync              # Latest 50
-bun run sync:all          # All bookmarks
+# Sync bookmarks + likes from Twitter (requires Safari login or cookies)
+bun run sync                            # Latest window (both timelines)
+bun run sync:all                        # All pages (both timelines)
+bun run sync --bookmarks-only --count=100
+bun run sync --likes-only --all --max-pages=10
 
 # Import from JSON file
 bun run import path/to/bookmarks.json
@@ -46,12 +48,13 @@ supabase functions deploy process-tweets --project-ref brawengrbiuvnmsyqhoe
 │  └─ Generate link embeddings (batch 10)                         │
 │                                                                  │
 │  Supabase Database (tweet_vault schema)                         │
-│  ├─ tweets (1536d embeddings, HNSW vector index)                │
+│  ├─ tweets (canonical tweet storage + embeddings)               │
+│  ├─ tweet_interactions (bookmark/like interaction records)      │
 │  ├─ links (1536d embeddings, HNSW vector index)                 │
 │  └─ sync_state (checkpoint tracking)                            │
 │                                                                  │
 │  MCP Server                                                      │
-│  └─ 7 tools: search_tweets, search_links, get_tweet, etc.       │
+│  └─ 8 tools: search_tweets, search_likes, search_links, etc.    │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -61,8 +64,8 @@ supabase functions deploy process-tweets --project-ref brawengrbiuvnmsyqhoe
 
 | Path                                 | Purpose                            |
 | ------------------------------------ | ---------------------------------- |
-| `mcp-server/index.ts`                | MCP server (7 tools for Claude)    |
-| `scripts/sync-from-bird.ts`          | CLI sync from Twitter via Bird     |
+| `mcp-server/index.ts`                | MCP server (8 tools for Claude)     |
+| `scripts/sync-from-bird.ts`          | Canonical sync for bookmarks + likes |
 | `src/process/*.ts`                   | Processing helpers (tweets, links) |
 | `src/utils/supabase.ts`              | Supabase client utilities          |
 | `supabase/functions/process-tweets/` | Edge Function for daily processing |
@@ -72,7 +75,8 @@ supabase functions deploy process-tweets --project-ref brawengrbiuvnmsyqhoe
 
 | Tool                   | Description                            |
 | ---------------------- | -------------------------------------- |
-| `search_tweets`        | Semantic search over bookmarked tweets |
+| `search_tweets`        | Semantic search over bookmarks + likes |
+| `search_likes`         | Semantic search over likes only        |
 | `search_links`         | Semantic search over extracted links   |
 | `get_tweet`            | Get specific tweet by ID with links    |
 | `list_links_by_domain` | Browse links by domain                 |

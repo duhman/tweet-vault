@@ -12,20 +12,58 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-/**
- * Generate embedding for text using OpenAI
- */
-async function generateEmbedding(text: string): Promise<number[]> {
-  const response = await openai.embeddings.create({
-    model: "text-embedding-3-small",
-    input: text,
-  });
-  return response.data[0].embedding;
+const EMBEDDING_MODEL = "text-embedding-3-small";
+const MAX_INPUT_CHARS = 8000;
+const DEFAULT_RETRIES = 4;
+
+interface EmbeddingOptions {
+  concurrency?: number;
+  batchSize?: number;
+  embedBatchSize?: number;
+  maxRounds?: number;
+  maxInputChars?: number;
 }
 
-/**
- * Create embedding text for a tweet
- */
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  retries = DEFAULT_RETRIES,
+): Promise<T> {
+  let attempt = 0;
+  let lastError: unknown;
+
+  while (attempt < retries) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      attempt += 1;
+      if (attempt >= retries) break;
+      const delayMs = Math.min(5000, 200 * 2 ** attempt);
+      await sleep(delayMs);
+    }
+  }
+
+  throw lastError;
+}
+
+function clampText(text: string, maxInputChars: number): string {
+  if (text.length <= maxInputChars) return text;
+  return text.slice(0, maxInputChars);
+}
+
+async function generateEmbeddings(texts: string[]): Promise<number[][]> {
+  const response = await openai.embeddings.create({
+    model: EMBEDDING_MODEL,
+    input: texts,
+  });
+
+  return response.data.map((item) => item.embedding);
+}
+
 function createTweetEmbeddingText(tweet: Tweet): string {
   const parts = [tweet.content];
 
@@ -38,111 +76,128 @@ function createTweetEmbeddingText(tweet: Tweet): string {
   return parts.join("\n");
 }
 
-/**
- * Create embedding text for a link
- */
 function createLinkEmbeddingText(link: Link): string {
-  const parts = [];
+  const parts: string[] = [];
 
-  if (link.title) {
-    parts.push(link.title);
-  }
-
-  if (link.description) {
-    parts.push(link.description);
-  }
-
-  if (link.domain) {
-    parts.push(`Domain: ${link.domain}`);
-  }
+  if (link.title) parts.push(link.title);
+  if (link.description) parts.push(link.description);
+  if (link.domain) parts.push(`Domain: ${link.domain}`);
 
   return parts.join("\n") || link.url;
 }
 
-/**
- * Process embeddings for tweets
- */
 async function processTweetEmbeddings(
   batchSize: number,
+  embedBatchSize: number,
+  maxInputChars: number,
 ): Promise<{ processed: number; failed: number }> {
   const tweets = await getTweetsWithoutEmbeddings(batchSize);
-
-  if (tweets.length === 0) {
-    return { processed: 0, failed: 0 };
-  }
+  if (tweets.length === 0) return { processed: 0, failed: 0 };
 
   let processed = 0;
   let failed = 0;
 
-  for (const tweet of tweets) {
+  for (let i = 0; i < tweets.length; i += embedBatchSize) {
+    const batch = tweets.slice(i, i + embedBatchSize);
+    const texts = batch.map((tweet) =>
+      clampText(createTweetEmbeddingText(tweet), maxInputChars),
+    );
+
     try {
-      const text = createTweetEmbeddingText(tweet);
-      const embedding = await generateEmbedding(text);
-      await updateTweetEmbedding(tweet.tweet_id, embedding);
-      processed++;
+      const embeddings = await withRetry(() => generateEmbeddings(texts));
+      for (let j = 0; j < batch.length; j += 1) {
+        try {
+          await updateTweetEmbedding(batch[j].tweet_id, embeddings[j]);
+          processed += 1;
+        } catch (error) {
+          console.error(`Failed to persist tweet embedding ${batch[j].tweet_id}:`, error);
+          failed += 1;
+        }
+      }
     } catch (error) {
-      console.error(`Failed to embed tweet ${tweet.tweet_id}:`, error);
-      failed++;
+      failed += batch.length;
+      console.error("Failed to embed tweet batch:", error);
     }
   }
 
   return { processed, failed };
 }
 
-/**
- * Process embeddings for links
- */
 async function processLinkEmbeddings(
   batchSize: number,
+  embedBatchSize: number,
+  maxInputChars: number,
 ): Promise<{ processed: number; failed: number }> {
   const links = await getLinksWithoutEmbeddings(batchSize);
-
-  if (links.length === 0) {
-    return { processed: 0, failed: 0 };
-  }
+  if (links.length === 0) return { processed: 0, failed: 0 };
 
   let processed = 0;
   let failed = 0;
 
-  for (const link of links) {
+  for (let i = 0; i < links.length; i += embedBatchSize) {
+    const batch = links.slice(i, i + embedBatchSize);
+    const texts = batch.map((link) =>
+      clampText(createLinkEmbeddingText(link), maxInputChars),
+    );
+
     try {
-      const text = createLinkEmbeddingText(link);
-      const embedding = await generateEmbedding(text);
-      await updateLinkEmbedding(link.id!, embedding);
-      processed++;
+      const embeddings = await withRetry(() => generateEmbeddings(texts));
+      for (let j = 0; j < batch.length; j += 1) {
+        try {
+          await updateLinkEmbedding(batch[j].id!, embeddings[j]);
+          processed += 1;
+        } catch (error) {
+          console.error(`Failed to persist link embedding ${batch[j].id}:`, error);
+          failed += 1;
+        }
+      }
     } catch (error) {
-      console.error(`Failed to embed link ${link.id}:`, error);
-      failed++;
+      failed += batch.length;
+      console.error("Failed to embed link batch:", error);
     }
   }
 
   return { processed, failed };
 }
 
-/**
- * Process all pending embeddings (tweets and links)
- */
-export async function processAllEmbeddings(concurrency = 3): Promise<{
+export async function processAllEmbeddings(
+  optionsOrConcurrency: number | EmbeddingOptions = 3,
+): Promise<{
   tweets: { processed: number; failed: number };
   links: { processed: number; failed: number };
 }> {
-  const batchSize = Math.max(5, concurrency * 10);
+  const options: EmbeddingOptions =
+    typeof optionsOrConcurrency === "number"
+      ? { concurrency: optionsOrConcurrency }
+      : optionsOrConcurrency;
 
-  let tweetStats = { processed: 0, failed: 0 };
-  let linkStats = { processed: 0, failed: 0 };
+  const concurrency = Math.max(1, options.concurrency ?? 3);
+  const batchSize = Math.max(10, options.batchSize ?? concurrency * 20);
+  const embedBatchSize = Math.max(1, options.embedBatchSize ?? Math.min(20, concurrency * 5));
+  const maxRounds = Math.max(1, options.maxRounds ?? 10);
+  const maxInputChars = Math.max(500, options.maxInputChars ?? MAX_INPUT_CHARS);
 
-  // Process tweets
-  for (let round = 0; round < 50; round++) {
-    const result = await processTweetEmbeddings(batchSize);
+  const tweetStats = { processed: 0, failed: 0 };
+  const linkStats = { processed: 0, failed: 0 };
+
+  for (let round = 0; round < maxRounds; round += 1) {
+    const result = await processTweetEmbeddings(
+      batchSize,
+      embedBatchSize,
+      maxInputChars,
+    );
     tweetStats.processed += result.processed;
     tweetStats.failed += result.failed;
 
     if (result.processed === 0) break;
   }
 
-  // Process links
-  for (let round = 0; round < 50; round++) {
-    const result = await processLinkEmbeddings(batchSize);
+  for (let round = 0; round < maxRounds; round += 1) {
+    const result = await processLinkEmbeddings(
+      batchSize,
+      embedBatchSize,
+      maxInputChars,
+    );
     linkStats.processed += result.processed;
     linkStats.failed += result.failed;
 

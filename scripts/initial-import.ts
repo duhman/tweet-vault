@@ -13,7 +13,7 @@ import {
   fetchAllLinkMetadata,
 } from "../src/process/links.js";
 import { processAllEmbeddings } from "../src/process/embeddings.js";
-import { recordSync } from "../src/utils/supabase.js";
+import { recordSync, upsertTweetInteractions } from "../src/utils/supabase.js";
 
 config();
 
@@ -64,6 +64,20 @@ async function main() {
   const { added, skipped } = await processTweets(data);
   console.log(`  ✅ Added ${added.length} new tweets`);
   console.log(`  ⏭️  Skipped ${skipped} duplicates\n`);
+
+  if (added.length > 0) {
+    const interactions = await upsertTweetInteractions(
+      added.map((tweet) => ({
+        tweet_id: tweet.tweet_id,
+        interaction_type: "bookmark",
+        interaction_at: tweet.created_at,
+        source: "manual-import",
+      })),
+    );
+    console.log(
+      `  ✅ Bookmark interactions inserted: ${interactions.inserted}, updated: ${interactions.updated}\n`,
+    );
+  }
 
   if (added.length === 0) {
     console.log("No new tweets to process. Exiting.");

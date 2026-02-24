@@ -1,5 +1,4 @@
-// Edge Function: Process tweets - generates embeddings and fetches link metadata
-// Triggered daily via pg_cron or manually via HTTP POST
+// Edge Function: Process pending metadata + embeddings in tweet_vault schema.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.47.0";
 
@@ -9,6 +8,9 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type",
 };
 
+const EMBEDDING_MODEL = "text-embedding-3-small";
+const SCHEMA = Deno.env.get("SUPABASE_SCHEMA") || "tweet_vault";
+
 interface ProcessResult {
   tweets_embedded: number;
   links_metadata_fetched: number;
@@ -16,7 +18,28 @@ interface ProcessResult {
   errors: string[];
 }
 
-// Generate embedding via OpenAI
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withRetry<T>(fn: () => Promise<T>, retries = 3): Promise<T> {
+  let attempt = 0;
+  let lastError: unknown;
+
+  while (attempt < retries) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      attempt += 1;
+      if (attempt >= retries) break;
+      await sleep(Math.min(4000, 200 * 2 ** attempt));
+    }
+  }
+
+  throw lastError;
+}
+
 async function generateEmbedding(
   text: string,
   openaiKey: string,
@@ -28,8 +51,8 @@ async function generateEmbedding(
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: "text-embedding-3-small",
-      input: text.slice(0, 8000), // Limit input length
+      model: EMBEDDING_MODEL,
+      input: text.slice(0, 8000),
     }),
   });
 
@@ -42,14 +65,13 @@ async function generateEmbedding(
   return data.data[0].embedding;
 }
 
-// Fetch link metadata
 async function fetchLinkMetadata(url: string): Promise<{
   title?: string;
   description?: string;
   domain?: string;
+  fetch_error?: string;
 }> {
   try {
-    // Expand t.co URLs
     let expandedUrl = url;
     if (url.includes("t.co/")) {
       const headResponse = await fetch(url, {
@@ -61,7 +83,6 @@ async function fetchLinkMetadata(url: string): Promise<{
 
     const domain = new URL(expandedUrl).hostname.replace(/^www\./, "");
 
-    // Skip certain domains
     const skipDomains = [
       "t.co",
       "pic.twitter.com",
@@ -80,14 +101,17 @@ async function fetchLinkMetadata(url: string): Promise<{
       },
     });
 
+    if (!response.ok) {
+      return { domain, fetch_error: `http-${response.status}` };
+    }
+
     const contentType = response.headers.get("content-type") || "";
     if (!contentType.includes("text/html")) {
-      return { domain };
+      return { domain, fetch_error: "content-not-html" };
     }
 
     const html = await response.text();
 
-    // Extract metadata with regex (no cheerio in Deno)
     const titleMatch =
       html.match(/<meta[^>]*property="og:title"[^>]*content="([^"]*)"/) ||
       html.match(/<meta[^>]*name="twitter:title"[^>]*content="([^"]*)"/) ||
@@ -104,19 +128,18 @@ async function fetchLinkMetadata(url: string): Promise<{
       domain,
     };
   } catch (error) {
-    console.error(`Failed to fetch metadata for ${url}:`, error);
-    return {};
+    return {
+      fetch_error: error instanceof Error ? error.message.slice(0, 180) : "metadata-fetch-failed",
+    };
   }
 }
 
 Deno.serve(async (req) => {
-  // Handle CORS
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
 
   try {
-    // Verify authorization
     const authHeader = req.headers.get("Authorization");
     if (!authHeader?.startsWith("Bearer ")) {
       return new Response(JSON.stringify({ error: "Unauthorized" }), {
@@ -140,8 +163,9 @@ Deno.serve(async (req) => {
     }
 
     const supabase = createClient(supabaseUrl, supabaseKey, {
-      db: { schema: "tweet_vault" },
+      db: { schema: SCHEMA },
     });
+
     const result: ProcessResult = {
       tweets_embedded: 0,
       links_metadata_fetched: 0,
@@ -149,87 +173,81 @@ Deno.serve(async (req) => {
       errors: [],
     };
 
-    // 1. Process tweets without embeddings (batch of 20)
     const { data: tweetsToEmbed, error: tweetsError } = await supabase
       .from("tweets")
-      .select("id, content, author_username, author_name")
+      .select("id, tweet_id, content, author_username, author_name")
       .is("embedding", null)
       .limit(20);
 
     if (tweetsError) {
       result.errors.push(`Failed to fetch tweets: ${tweetsError.message}`);
-    } else if (tweetsToEmbed && tweetsToEmbed.length > 0) {
-      for (const tweet of tweetsToEmbed) {
+    } else {
+      for (const tweet of tweetsToEmbed ?? []) {
         try {
           const text = `${tweet.author_name || tweet.author_username} (@${tweet.author_username}): ${tweet.content}`;
-          const embedding = await generateEmbedding(text, openaiKey);
+          const embedding = await withRetry(() => generateEmbedding(text, openaiKey));
 
           const { error: updateError } = await supabase
             .from("tweets")
-            .update({ embedding })
-            .eq("id", tweet.id);
+            .update({ embedding, processed_at: new Date().toISOString() })
+            .eq("tweet_id", tweet.tweet_id);
 
           if (updateError) {
             result.errors.push(
-              `Failed to update tweet ${tweet.id}: ${updateError.message}`,
+              `Failed to update tweet ${tweet.tweet_id}: ${updateError.message}`,
             );
           } else {
-            result.tweets_embedded++;
+            result.tweets_embedded += 1;
           }
         } catch (error) {
-          result.errors.push(
-            `Failed to embed tweet ${tweet.id}: ${error.message}`,
-          );
+          const message = error instanceof Error ? error.message : "unknown";
+          result.errors.push(`Failed to embed tweet ${tweet.tweet_id}: ${message}`);
         }
       }
     }
 
-    // 2. Fetch metadata for links without it (batch of 10)
+    const cooldownCutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
     const { data: linksToFetch, error: linksError } = await supabase
       .from("links")
       .select("id, url, expanded_url")
       .is("title", null)
-      .is("fetch_error", null)
+      .or(`fetch_error.is.null,and(fetch_error.not.is.null,fetched_at.lt.${cooldownCutoff})`)
       .limit(10);
 
     if (linksError) {
       result.errors.push(`Failed to fetch links: ${linksError.message}`);
-    } else if (linksToFetch && linksToFetch.length > 0) {
-      for (const link of linksToFetch) {
-        try {
-          const url = link.expanded_url || link.url;
-          const metadata = await fetchLinkMetadata(url);
+    } else {
+      for (const link of linksToFetch ?? []) {
+        const metadata = await fetchLinkMetadata(link.expanded_url || link.url);
+        const updates: Record<string, unknown> = {
+          fetched_at: new Date().toISOString(),
+          domain: metadata.domain ?? null,
+        };
 
-          const { error: updateError } = await supabase
-            .from("links")
-            .update({
-              title: metadata.title,
-              description: metadata.description,
-              domain: metadata.domain,
-              fetched_at: new Date().toISOString(),
-            })
-            .eq("id", link.id);
+        if (metadata.fetch_error) {
+          updates.fetch_error = metadata.fetch_error;
+        } else {
+          updates.title = metadata.title ?? null;
+          updates.description = metadata.description ?? null;
+          updates.fetch_error = null;
+        }
 
-          if (updateError) {
-            result.errors.push(
-              `Failed to update link ${link.id}: ${updateError.message}`,
-            );
-          } else {
-            result.links_metadata_fetched++;
-          }
-        } catch (error) {
-          await supabase
-            .from("links")
-            .update({ fetch_error: error.message })
-            .eq("id", link.id);
+        const { error: updateError } = await supabase
+          .from("links")
+          .update(updates)
+          .eq("id", link.id);
+
+        if (updateError) {
           result.errors.push(
-            `Failed to fetch link ${link.id}: ${error.message}`,
+            `Failed to update link ${link.id}: ${updateError.message}`,
           );
+        } else if (!metadata.fetch_error) {
+          result.links_metadata_fetched += 1;
         }
       }
     }
 
-    // 3. Generate embeddings for links with metadata but no embedding (batch of 10)
     const { data: linksToEmbed, error: embedLinksError } = await supabase
       .from("links")
       .select("id, url, title, description, domain")
@@ -241,14 +259,14 @@ Deno.serve(async (req) => {
       result.errors.push(
         `Failed to fetch links for embedding: ${embedLinksError.message}`,
       );
-    } else if (linksToEmbed && linksToEmbed.length > 0) {
-      for (const link of linksToEmbed) {
+    } else {
+      for (const link of linksToEmbed ?? []) {
         try {
           const text = [link.title, link.description, link.domain, link.url]
             .filter(Boolean)
             .join(" | ");
 
-          const embedding = await generateEmbedding(text, openaiKey);
+          const embedding = await withRetry(() => generateEmbedding(text, openaiKey));
 
           const { error: updateError } = await supabase
             .from("links")
@@ -260,20 +278,18 @@ Deno.serve(async (req) => {
               `Failed to update link embedding ${link.id}: ${updateError.message}`,
             );
           } else {
-            result.links_embedded++;
+            result.links_embedded += 1;
           }
         } catch (error) {
-          result.errors.push(
-            `Failed to embed link ${link.id}: ${error.message}`,
-          );
+          const message = error instanceof Error ? error.message : "unknown";
+          result.errors.push(`Failed to embed link ${link.id}: ${message}`);
         }
       }
     }
 
-    // 4. Record sync state
     await supabase.from("sync_state").insert({
       last_sync_at: new Date().toISOString(),
-      tweets_added: 0, // This is for new tweet imports
+      tweets_added: 0,
       links_processed: result.links_metadata_fetched,
       embeddings_generated: result.tweets_embedded + result.links_embedded,
       sync_type: "cron",
@@ -289,8 +305,8 @@ Deno.serve(async (req) => {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (error) {
-    console.error("Process tweets error:", error);
-    return new Response(JSON.stringify({ error: error.message }), {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    return new Response(JSON.stringify({ error: message }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });

@@ -1,15 +1,15 @@
 # 🐦 Tweet Vault
 
-**Twitter Bookmarks Intelligence System** — Capture your bookmarked tweets, extract links, generate embeddings, and search them semantically via Claude MCP.
+**Twitter Bookmark + Likes Intelligence System** — Capture your saved tweets, extract links, generate embeddings, and search semantically via Claude MCP.
 
-Ever bookmark interesting tweets and never find them again? Tweet Vault makes your Twitter/X bookmarks searchable with natural language queries like _"that thread about system design"_ or _"AI tools someone recommended"_.
+Tweet Vault makes your Twitter/X bookmarks and likes searchable with natural language queries like _"that thread about system design"_ or _"AI tools someone recommended"_.
 
 ## Features
 
 - 🔍 **Semantic Search** — Find tweets and links by meaning, not just keywords
 - 🔗 **Link Extraction** — Automatically extracts and indexes URLs with metadata
-- 🤖 **Claude MCP Integration** — Query your bookmarks directly from Claude
-- 🐦 **Bird CLI Integration** — Sync bookmarks automatically from Twitter
+- 🤖 **Claude MCP Integration** — Query bookmarks + likes directly from Claude
+- 🐦 **Bird CLI Integration** — Sync bookmarks and likes automatically from Twitter
 - ⏰ **Daily Processing** — Automatically processes embeddings via Supabase pg_cron
 - 🧠 **Smart Embeddings** — OpenAI text-embedding-3-small (1536 dimensions)
 - ⚡ **Fast Vector Search** — pgvector with HNSW indexes
@@ -27,12 +27,13 @@ Ever bookmark interesting tweets and never find them again? Tweet Vault makes yo
 │  └─ Generate link embeddings (batch 10)                        │
 │                                                                │
 │  Supabase Database (tweet_vault schema)                        │
-│  ├─ tweets (1536d embeddings, HNSW vector index)               │
+│  ├─ tweets (canonical tweet storage, 1536d embeddings)         │
+│  ├─ tweet_interactions (bookmark/like interaction model)       │
 │  ├─ links (1536d embeddings, HNSW vector index)                │
 │  └─ sync_state (checkpoint tracking)                           │
 │                                                                │
 │  MCP Server ─► Claude                                          │
-│  └─ 7 tools: search_tweets, search_links, get_tweet, etc.      │
+│  └─ 8 tools: search_tweets, search_likes, search_links, etc.   │
 └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -43,7 +44,7 @@ Ever bookmark interesting tweets and never find them again? Tweet Vault makes yo
 - [Bun](https://bun.sh) 1.2+
 - [Supabase](https://supabase.com) project with pgvector extension
 - [OpenAI API key](https://platform.openai.com/api-keys)
-- Twitter/X account with bookmarks
+- Twitter/X account with bookmarks/likes
 
 ### Installation
 
@@ -71,16 +72,22 @@ supabase functions deploy process-tweets --project-ref <your-project-ref>
 supabase secrets set OPENAI_API_KEY="<your-key>" --project-ref <your-project-ref>
 ```
 
-### Import Your Bookmarks
+### Import From Twitter
 
 **Option 1: Bird CLI (Recommended)**
 
 ```bash
-# Sync latest bookmarks (requires Safari login to Twitter)
+# Sync bookmarks + likes (latest window, requires Safari login or cookies)
 bun run sync
 
-# Sync all bookmarks
+# Sync all available pages for both timelines
 bun run sync:all
+
+# Sync likes only
+bun run sync --likes-only
+
+# Sync bookmarks only
+bun run sync --bookmarks-only
 ```
 
 **Option 2: Manual JSON Export**
@@ -115,7 +122,8 @@ Add to your Claude MCP configuration (`~/.claude.json` or Claude Desktop setting
 
 | Tool                   | Description                               |
 | ---------------------- | ----------------------------------------- |
-| `search_tweets`        | Semantic search over bookmarked tweets    |
+| `search_tweets`        | Semantic search over saved tweets (bookmarks + likes) |
+| `search_likes`         | Semantic search over liked tweets only    |
 | `search_links`         | Semantic search over extracted links      |
 | `get_tweet`            | Get specific tweet by ID                  |
 | `list_links_by_domain` | Browse links by domain (e.g., github.com) |
@@ -127,7 +135,8 @@ Add to your Claude MCP configuration (`~/.claude.json` or Claude Desktop setting
 
 Once configured, ask Claude things like:
 
-- _"Search my bookmarks for tweets about TypeScript best practices"_
+- _"Search my saved tweets for TypeScript best practices"_
+- _"Search my likes for tweets about pgvector"_
 - _"Find GitHub links I've bookmarked about testing"_
 - _"What did @swyx tweet that I saved?"_
 - _"Show me bookmarks related to AI agents"_
@@ -136,8 +145,8 @@ Once configured, ask Claude things like:
 
 | Command                 | Description                              |
 | ----------------------- | ---------------------------------------- |
-| `bun run sync`          | Sync bookmarks from Twitter via Bird CLI |
-| `bun run sync:all`      | Sync ALL bookmarks (may take a while)    |
+| `bun run sync`          | Sync bookmarks + likes from Twitter via Bird |
+| `bun run sync:all`      | Sync all available pages (bookmarks + likes) |
 | `bun run import <file>` | Import tweets from JSON export           |
 | `bun run mcp`           | Run MCP server standalone                |
 | `bun run typecheck`     | TypeScript type checking                 |
@@ -165,18 +174,20 @@ Once configured, ask Claude things like:
 
 | Table        | Purpose                                        |
 | ------------ | ---------------------------------------------- |
-| `tweets`     | Bookmarked tweets with metadata and embeddings |
+| `tweets`     | Canonical saved tweets with metadata and embeddings |
+| `tweet_interactions` | Per-tweet interactions (`bookmark` / `like`) |
 | `links`      | Extracted URLs with og:tags and embeddings     |
 | `sync_state` | Sync history and statistics                    |
 
 ### RPC Functions
 
-- `search_tweets` — Semantic tweet search via pgvector
+- `search_tweets` — Interaction-aware semantic tweet search via pgvector
+- `vault_stats` — Aggregate stats including likes/bookmarks counts
 - `search_links` — Semantic link search via pgvector
 
 ## Processing Pipeline
 
-1. **Fetch** — Bird CLI fetches bookmarks from Twitter GraphQL API
+1. **Fetch** — Bird CLI fetches bookmarks and likes from Twitter GraphQL API
 2. **Parse** — Validate with Zod schemas, transform to database format
 3. **Deduplicate** — Check against existing tweet_ids
 4. **Store** — Upsert to Supabase

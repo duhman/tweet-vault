@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Tweet Vault MCP Server
- * Semantic search over Twitter bookmarks using Supabase
+ * Semantic search over Twitter bookmarks + likes using Supabase
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -15,10 +15,8 @@ import { config } from "dotenv";
 import { createClient } from "@supabase/supabase-js";
 import OpenAI from "openai";
 
-// Load environment variables
 config();
 
-// Environment validation
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const openaiKey = process.env.OPENAI_API_KEY;
@@ -31,22 +29,13 @@ if (!openaiKey) {
   throw new Error("OPENAI_API_KEY is required for embeddings");
 }
 
-// Initialize clients
 const supabase = createClient(supabaseUrl, supabaseKey, {
   db: { schema },
 });
 const openai = new OpenAI({ apiKey: openaiKey });
 
-// Generate embedding for a query
-async function getEmbedding(text: string): Promise<number[]> {
-  const response = await openai.embeddings.create({
-    model: "text-embedding-3-small",
-    input: text,
-  });
-  return response.data[0].embedding;
-}
+type InteractionFilter = "all" | "bookmark" | "like";
 
-// Type definitions
 interface Tweet {
   id: number;
   tweet_id: string;
@@ -77,25 +66,92 @@ interface Link {
 
 interface TweetSearchResult extends Tweet {
   similarity: number;
+  interaction_types?: string[];
+  primary_interaction?: string;
 }
 
 interface LinkSearchResult extends Link {
   similarity: number;
 }
 
-// Define available tools
+async function getEmbedding(text: string): Promise<number[]> {
+  const response = await openai.embeddings.create({
+    model: "text-embedding-3-small",
+    input: text,
+  });
+  return response.data[0].embedding;
+}
+
+function normalizeInteractionFilter(value?: string): InteractionFilter {
+  if (value === "bookmark" || value === "like") return value;
+  return "all";
+}
+
+async function searchTweetsRpc(
+  embedding: number[],
+  threshold: number,
+  limit: number,
+  interactionType: InteractionFilter,
+): Promise<TweetSearchResult[]> {
+  const params = {
+    query_embedding: JSON.stringify(embedding),
+    match_threshold: threshold,
+    match_count: Math.min(limit, 50),
+  };
+
+  const { data, error } = await supabase.rpc("search_tweets", params);
+
+  if (error) throw error;
+
+  const rows: TweetSearchResult[] = data || [];
+  if (rows.length === 0) return rows;
+
+  const ids = rows.map((row) => row.tweet_id);
+  const { data: interactions, error: interactionError } = await supabase
+    .from("tweet_interactions")
+    .select("tweet_id,interaction_type")
+    .in("tweet_id", ids);
+
+  if (interactionError) {
+    if (interactionType === "all") return rows;
+    return [];
+  }
+
+  const interactionMap = new Map<string, string[]>();
+  for (const interaction of interactions ?? []) {
+    const list = interactionMap.get(interaction.tweet_id) || [];
+    if (!list.includes(interaction.interaction_type)) {
+      list.push(interaction.interaction_type);
+    }
+    interactionMap.set(interaction.tweet_id, list);
+  }
+
+  const enriched = rows.map((row) => {
+    const types = interactionMap.get(row.tweet_id) || ["bookmark"];
+    return {
+      ...row,
+      interaction_types: types,
+      primary_interaction: types[0],
+    };
+  });
+
+  if (interactionType === "all") return enriched;
+  return enriched.filter((row) =>
+    (row.interaction_types || []).includes(interactionType),
+  );
+}
+
 const tools: Tool[] = [
   {
     name: "search_tweets",
     description:
-      "Search bookmarked tweets using semantic similarity. Returns tweets that are semantically similar to your query. Use this to find relevant tweets about specific topics, technologies, ideas, or concepts.",
+      "Semantic search over saved tweets. Returns bookmarks and likes by default, with optional filtering by interaction type.",
     inputSchema: {
       type: "object",
       properties: {
         query: {
           type: "string",
-          description:
-            "The search query - describe what you're looking for in natural language",
+          description: "Natural language description of the tweet content to find",
         },
         limit: {
           type: "number",
@@ -104,8 +160,39 @@ const tools: Tool[] = [
         },
         threshold: {
           type: "number",
+          description: "Minimum similarity threshold 0-1 (default: 0.5)",
+          default: 0.5,
+        },
+        interaction_type: {
+          type: "string",
+          enum: ["all", "bookmark", "like"],
           description:
-            "Minimum similarity threshold 0-1 (default: 0.5, higher = more relevant)",
+            "Filter result source: all interactions (default), bookmark only, or like only",
+          default: "all",
+        },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "search_likes",
+    description:
+      "Semantic search over liked tweets only. Thin wrapper over search_tweets(interaction_type='like').",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Natural language query for liked tweet content",
+        },
+        limit: {
+          type: "number",
+          description: "Maximum number of results (default: 10, max: 50)",
+          default: 10,
+        },
+        threshold: {
+          type: "number",
+          description: "Minimum similarity threshold 0-1 (default: 0.5)",
           default: 0.5,
         },
       },
@@ -115,14 +202,13 @@ const tools: Tool[] = [
   {
     name: "search_links",
     description:
-      "Search extracted links from tweets using semantic similarity. Returns links with titles and descriptions that match your query. Use this to find articles, resources, or tools mentioned in bookmarked tweets.",
+      "Search extracted links from tweets using semantic similarity.",
     inputSchema: {
       type: "object",
       properties: {
         query: {
           type: "string",
-          description:
-            "The search query - describe what kind of links you're looking for",
+          description: "Natural language query for links/resources",
         },
         limit: {
           type: "number",
@@ -131,8 +217,7 @@ const tools: Tool[] = [
         },
         threshold: {
           type: "number",
-          description:
-            "Minimum similarity threshold 0-1 (default: 0.5, higher = more relevant)",
+          description: "Minimum similarity threshold 0-1 (default: 0.5)",
           default: 0.5,
         },
       },
@@ -142,13 +227,13 @@ const tools: Tool[] = [
   {
     name: "get_tweet",
     description:
-      "Get a specific tweet by its Twitter ID. Returns full tweet content including author, metrics, and extracted links.",
+      "Get a specific tweet by Twitter ID, including links and interaction metadata.",
     inputSchema: {
       type: "object",
       properties: {
         tweet_id: {
           type: "string",
-          description: "The Twitter/X tweet ID",
+          description: "Twitter/X tweet ID",
         },
       },
       required: ["tweet_id"],
@@ -156,14 +241,13 @@ const tools: Tool[] = [
   },
   {
     name: "list_links_by_domain",
-    description:
-      "List all extracted links from a specific domain. Use this to find all resources from a particular website (e.g., 'github.com', 'youtube.com').",
+    description: "List extracted links from a specific domain.",
     inputSchema: {
       type: "object",
       properties: {
         domain: {
           type: "string",
-          description: "The domain to filter by (e.g., 'github.com')",
+          description: "Domain to filter by (e.g., github.com)",
         },
         limit: {
           type: "number",
@@ -176,14 +260,13 @@ const tools: Tool[] = [
   },
   {
     name: "find_related",
-    description:
-      "Find tweets and links related to a topic or project idea. This combines tweet and link search to surface relevant inspiration and resources. Use this when brainstorming or researching a new project.",
+    description: "Find related tweets and links for a topic.",
     inputSchema: {
       type: "object",
       properties: {
         topic: {
           type: "string",
-          description: "The topic or project idea to find related content for",
+          description: "Topic to search related content for",
         },
         limit: {
           type: "number",
@@ -197,7 +280,7 @@ const tools: Tool[] = [
   {
     name: "vault_stats",
     description:
-      "Get statistics about the tweet vault including total counts, top authors, top domains, and last sync information.",
+      "Get Tweet Vault statistics (tweets, links, embeddings, bookmarks, likes, top authors/domains).",
     inputSchema: {
       type: "object",
       properties: {},
@@ -205,14 +288,13 @@ const tools: Tool[] = [
   },
   {
     name: "list_authors",
-    description:
-      "List tweets from a specific Twitter author. Use this to see what content from a particular person you've bookmarked.",
+    description: "List saved tweets from a specific Twitter author.",
     inputSchema: {
       type: "object",
       properties: {
         username: {
           type: "string",
-          description: "Twitter username (without @) to filter by",
+          description: "Twitter username (without @)",
         },
         limit: {
           type: "number",
@@ -225,38 +307,44 @@ const tools: Tool[] = [
   },
 ];
 
-// Tool implementations
 async function handleSearchTweets(
   query: string,
   limit = 10,
   threshold = 0.5,
+  interactionType: InteractionFilter = "all",
 ): Promise<string> {
   const embedding = await getEmbedding(query);
-
-  const { data, error } = await supabase.rpc("search_tweets", {
-    query_embedding: JSON.stringify(embedding),
-    match_threshold: threshold,
-    match_count: Math.min(limit, 50),
-  });
-
-  if (error) throw error;
-
-  const results: TweetSearchResult[] = data || [];
+  const results = await searchTweetsRpc(
+    embedding,
+    threshold,
+    limit,
+    interactionType,
+  );
 
   if (results.length === 0) {
-    return "No matching tweets found. Try a broader search query or lower the similarity threshold.";
+    return "No matching tweets found. Try a broader query or lower threshold.";
   }
 
   return results
-    .map(
-      (tweet, i) =>
-        `${i + 1}. **@${tweet.author_username}** (${(tweet.similarity * 100).toFixed(1)}% match)
-   ${tweet.content.slice(0, 280)}${tweet.content.length > 280 ? "..." : ""}
+    .map((tweet, i) => {
+      const interactions = tweet.interaction_types?.length
+        ? tweet.interaction_types.join(", ")
+        : tweet.primary_interaction || "bookmark";
+      return `${i + 1}. **@${tweet.author_username}** (${(tweet.similarity * 100).toFixed(1)}% match)
+   [${interactions}] ${tweet.content.slice(0, 280)}${tweet.content.length > 280 ? "..." : ""}
    📅 ${tweet.created_at ? new Date(tweet.created_at).toLocaleDateString() : "Unknown date"}
    ❤️ ${tweet.metrics?.likes ?? 0} | 🔁 ${tweet.metrics?.retweets ?? 0}
-   🔗 Tweet ID: ${tweet.tweet_id}`,
-    )
+   🔗 Tweet ID: ${tweet.tweet_id}`;
+    })
     .join("\n\n");
+}
+
+async function handleSearchLikes(
+  query: string,
+  limit = 10,
+  threshold = 0.5,
+): Promise<string> {
+  return handleSearchTweets(query, limit, threshold, "like");
 }
 
 async function handleSearchLinks(
@@ -275,15 +363,13 @@ async function handleSearchLinks(
   if (error) throw error;
 
   const results: LinkSearchResult[] = data || [];
-
   if (results.length === 0) {
-    return "No matching links found. Try a broader search query or lower the similarity threshold.";
+    return "No matching links found. Try a broader query or lower threshold.";
   }
 
   return results
     .map(
-      (link, i) =>
-        `${i + 1}. **${link.title || "Untitled"}** (${(link.similarity * 100).toFixed(1)}% match)
+      (link, i) => `${i + 1}. **${link.title || "Untitled"}** (${(link.similarity * 100).toFixed(1)}% match)
    ${link.description?.slice(0, 200) || "No description"}${(link.description?.length ?? 0) > 200 ? "..." : ""}
    🌐 ${link.domain || "Unknown domain"}
    🔗 ${link.expanded_url || link.url}`,
@@ -309,7 +395,26 @@ ${tweet.content}
 
 📊 Metrics: ❤️ ${tweet.metrics?.likes ?? 0} | 🔁 ${tweet.metrics?.retweets ?? 0} | 💬 ${tweet.metrics?.replies ?? 0}`;
 
-  // Get links for this tweet
+  const { data: interactions } = await supabase
+    .from("tweet_interactions")
+    .select("interaction_type,interaction_at,source")
+    .eq("tweet_id", tweetId)
+    .order("interaction_at", { ascending: false });
+
+  if (interactions && interactions.length > 0) {
+    result += "\n\n🧩 **Interactions:**\n";
+    result += interactions
+      .map(
+        (item: {
+          interaction_type: string;
+          interaction_at?: string;
+          source?: string;
+        }) =>
+          `- ${item.interaction_type}${item.interaction_at ? ` @ ${new Date(item.interaction_at).toLocaleString()}` : ""}${item.source ? ` (${item.source})` : ""}`,
+      )
+      .join("\n");
+  }
+
   const { data: links } = await supabase
     .from("links")
     .select("*")
@@ -344,7 +449,6 @@ async function handleListLinksByDomain(
     .limit(limit);
 
   if (error) throw error;
-
   if (!links || links.length === 0) {
     return `No links found from domain "${domain}".`;
   }
@@ -353,8 +457,7 @@ async function handleListLinksByDomain(
     `Found ${links.length} links from "${domain}":\n\n` +
     links
       .map(
-        (link: Link, i: number) =>
-          `${i + 1}. **${link.title || "Untitled"}**
+        (link: Link, i: number) => `${i + 1}. **${link.title || "Untitled"}**
    ${link.expanded_url || link.url}
    From tweet_id: ${link.tweet_id ?? "unknown"}`,
       )
@@ -365,33 +468,26 @@ async function handleListLinksByDomain(
 async function handleFindRelated(topic: string, limit = 5): Promise<string> {
   const embedding = await getEmbedding(topic);
 
-  // Search tweets
-  const { data: tweets } = await supabase.rpc("search_tweets", {
-    query_embedding: JSON.stringify(embedding),
-    match_threshold: 0.5,
-    match_count: limit,
-  });
+  const tweetResults = await searchTweetsRpc(embedding, 0.5, limit, "all");
 
-  // Search links
   const { data: links } = await supabase.rpc("search_links", {
     query_embedding: JSON.stringify(embedding),
     match_threshold: 0.5,
     match_count: limit,
   });
 
-  let result = `## Related content for: "${topic}"\n\n`;
-
-  const tweetResults: TweetSearchResult[] = tweets || [];
   const linkResults: LinkSearchResult[] = links || [];
+
+  let result = `## Related content for: "${topic}"\n\n`;
 
   if (tweetResults.length > 0) {
     result += "### 📱 Related Tweets\n\n";
     result += tweetResults
-      .map(
-        (tweet, i) =>
-          `${i + 1}. **@${tweet.author_username}** (${(tweet.similarity * 100).toFixed(0)}%)
-   ${tweet.content.slice(0, 200)}...`,
-      )
+      .map((tweet, i) => {
+        const source = tweet.primary_interaction || "bookmark";
+        return `${i + 1}. **@${tweet.author_username}** (${(tweet.similarity * 100).toFixed(0)}%) [${source}]
+   ${tweet.content.slice(0, 200)}...`;
+      })
       .join("\n\n");
   } else {
     result += "### 📱 Related Tweets\nNo matching tweets found.\n";
@@ -403,8 +499,7 @@ async function handleFindRelated(topic: string, limit = 5): Promise<string> {
     result += "### 🔗 Related Links\n\n";
     result += linkResults
       .map(
-        (link, i) =>
-          `${i + 1}. **${link.title || "Untitled"}** (${(link.similarity * 100).toFixed(0)}%)
+        (link, i) => `${i + 1}. **${link.title || "Untitled"}** (${(link.similarity * 100).toFixed(0)}%)
    ${link.expanded_url || link.url}
    ${link.description?.slice(0, 100) || ""}...`,
       )
@@ -417,7 +512,49 @@ async function handleFindRelated(topic: string, limit = 5): Promise<string> {
 }
 
 async function handleVaultStats(): Promise<string> {
-  // Get total counts
+  const { data: stats, error } = await supabase.rpc("vault_stats");
+
+  if (!error && stats) {
+    const topAuthors = Array.isArray(stats.top_authors)
+      ? stats.top_authors
+          .map((item: { author_username?: string }) => item.author_username)
+          .filter(Boolean)
+      : [];
+
+    const topDomains = Array.isArray(stats.top_domains)
+      ? stats.top_domains
+          .map((item: { domain?: string }) => item.domain)
+          .filter(Boolean)
+      : [];
+
+    let response = `## 📊 Tweet Vault Statistics
+
+**Totals:**
+- Tweets: ${stats.total_tweets ?? 0}
+- Links: ${stats.total_links ?? 0}
+- Tweets with embeddings: ${stats.tweets_with_embeddings ?? 0}
+- Links with embeddings: ${stats.links_with_embeddings ?? 0}
+- Bookmarks: ${stats.bookmarks_count ?? 0}
+- Likes: ${stats.likes_count ?? 0}`;
+
+    if (topAuthors.length > 0) {
+      response += "\n\n**Top Authors:**\n";
+      response += topAuthors.map((a: string) => `- @${a}`).join("\n");
+    }
+
+    if (topDomains.length > 0) {
+      response += "\n\n**Top Domains:**\n";
+      response += topDomains.map((d: string) => `- ${d}`).join("\n");
+    }
+
+    if (stats.last_sync?.last_sync_at) {
+      response += `\n\n**Last Sync:**\n- Time: ${new Date(stats.last_sync.last_sync_at).toLocaleString()}`;
+    }
+
+    return response;
+  }
+
+  // Fallback for pre-migration environments.
   const { count: totalTweets } = await supabase
     .from("tweets")
     .select("*", { count: "exact", head: true });
@@ -426,81 +563,11 @@ async function handleVaultStats(): Promise<string> {
     .from("links")
     .select("*", { count: "exact", head: true });
 
-  const { count: tweetsWithEmbeddings } = await supabase
-    .from("tweets")
-    .select("*", { count: "exact", head: true })
-    .not("embedding", "is", null);
-
-  const { count: linksWithEmbeddings } = await supabase
-    .from("links")
-    .select("*", { count: "exact", head: true })
-    .not("embedding", "is", null);
-
-  // Get top authors
-  const { data: authorData } = await supabase
-    .from("tweets")
-    .select("author_username");
-
-  const authorCounts: Record<string, number> = {};
-  authorData?.forEach((t) => {
-    if (t.author_username) {
-      authorCounts[t.author_username] =
-        (authorCounts[t.author_username] || 0) + 1;
-    }
-  });
-  const topAuthors = Object.entries(authorCounts)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 5)
-    .map(([author]) => author);
-
-  // Get top domains
-  const { data: domainData } = await supabase
-    .from("links")
-    .select("domain")
-    .not("domain", "is", null);
-
-  const domainCounts: Record<string, number> = {};
-  domainData?.forEach((l) => {
-    if (l.domain) {
-      domainCounts[l.domain] = (domainCounts[l.domain] || 0) + 1;
-    }
-  });
-  const topDomains = Object.entries(domainCounts)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 5)
-    .map(([domain]) => domain);
-
-  // Get last sync
-  const { data: syncData } = await supabase
-    .from("sync_state")
-    .select("last_sync_at")
-    .order("last_sync_at", { ascending: false })
-    .limit(1);
-
-  let result = `## 📊 Tweet Vault Statistics
+  return `## 📊 Tweet Vault Statistics
 
 **Totals:**
 - Tweets: ${totalTweets ?? 0}
-- Links: ${totalLinks ?? 0}
-- Tweets with embeddings: ${tweetsWithEmbeddings ?? 0}
-- Links with embeddings: ${linksWithEmbeddings ?? 0}`;
-
-  if (topAuthors.length > 0) {
-    result += "\n\n**Top Authors:**\n";
-    result += topAuthors.map((a) => `- @${a}`).join("\n");
-  }
-
-  if (topDomains.length > 0) {
-    result += "\n\n**Top Domains:**\n";
-    result += topDomains.map((d) => `- ${d}`).join("\n");
-  }
-
-  if (syncData?.[0]?.last_sync_at) {
-    result += `\n\n**Last Sync:**
-- Time: ${new Date(syncData[0].last_sync_at).toLocaleString()}`;
-  }
-
-  return result;
+- Links: ${totalLinks ?? 0}`;
 }
 
 async function handleListAuthors(
@@ -517,15 +584,14 @@ async function handleListAuthors(
   if (error) throw error;
 
   if (!tweets || tweets.length === 0) {
-    return `No bookmarked tweets found from @${username}.`;
+    return `No saved tweets found from @${username}.`;
   }
 
   return (
-    `Found ${tweets.length} bookmarked tweets from @${username}:\n\n` +
+    `Found ${tweets.length} saved tweets from @${username}:\n\n` +
     tweets
       .map(
-        (tweet: Tweet, i: number) =>
-          `${i + 1}. ${tweet.content.slice(0, 200)}${tweet.content.length > 200 ? "..." : ""}
+        (tweet: Tweet, i: number) => `${i + 1}. ${tweet.content.slice(0, 200)}${tweet.content.length > 200 ? "..." : ""}
    📅 ${tweet.created_at ? new Date(tweet.created_at).toLocaleDateString() : "Unknown"}
    ❤️ ${tweet.metrics?.likes ?? 0} | 🔁 ${tweet.metrics?.retweets ?? 0}`,
       )
@@ -533,11 +599,10 @@ async function handleListAuthors(
   );
 }
 
-// Create and run server
 const server = new Server(
   {
     name: "tweet-vault",
-    version: "2.0.0",
+    version: "2.1.0",
   },
   {
     capabilities: {
@@ -546,9 +611,7 @@ const server = new Server(
   },
 );
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools,
-}));
+server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
@@ -559,6 +622,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     switch (name) {
       case "search_tweets":
         result = await handleSearchTweets(
+          args?.query as string,
+          args?.limit as number,
+          args?.threshold as number,
+          normalizeInteractionFilter(args?.interaction_type as string),
+        );
+        break;
+      case "search_likes":
+        result = await handleSearchLikes(
           args?.query as string,
           args?.limit as number,
           args?.threshold as number,
@@ -612,7 +683,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
-// Start server
 const transport = new StdioServerTransport();
-console.error("Tweet Vault MCP Server v2.0.0 (Supabase) running on stdio");
+console.error("Tweet Vault MCP Server v2.1.0 (Supabase) running on stdio");
 server.connect(transport).catch(console.error);

@@ -6,7 +6,7 @@ import {
   fetchAllLinkMetadata,
 } from "./process/links.js";
 import { processAllEmbeddings } from "./process/embeddings.js";
-import { getStats, recordSync } from "./utils/supabase.js";
+import { getStats, recordSync, upsertTweetInteractions } from "./utils/supabase.js";
 
 // Load environment variables
 config();
@@ -38,6 +38,17 @@ async function importFromFile(filePath: string): Promise<void> {
   console.log(
     `Added ${added.length} new tweets, skipped ${skipped} duplicates`,
   );
+
+  if (added.length > 0) {
+    await upsertTweetInteractions(
+      added.map((tweet) => ({
+        tweet_id: tweet.tweet_id,
+        interaction_type: "bookmark",
+        interaction_at: tweet.created_at,
+        source: "manual-import",
+      })),
+    );
+  }
 
   // Extract links
   console.log("Extracting links from tweets...");
@@ -80,6 +91,12 @@ async function showStats(): Promise<void> {
   console.log(`Total links: ${stats.total_links}`);
   console.log(`Tweets with embeddings: ${stats.tweets_with_embeddings}`);
   console.log(`Links with embeddings: ${stats.links_with_embeddings}`);
+  if (typeof stats.bookmarks_count === "number") {
+    console.log(`Bookmarks: ${stats.bookmarks_count}`);
+  }
+  if (typeof stats.likes_count === "number") {
+    console.log(`Likes: ${stats.likes_count}`);
+  }
 
   if (stats.top_authors && stats.top_authors.length > 0) {
     console.log("\n👤 Top Authors:");

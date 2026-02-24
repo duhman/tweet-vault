@@ -1,6 +1,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { createClient } from "@supabase/supabase-js";
 
+export type InteractionType = "bookmark" | "like";
+
 export interface Tweet {
   id?: number;
   tweet_id: string;
@@ -29,6 +31,16 @@ export interface Link {
   og_image?: string;
   embedding?: number[];
   fetch_error?: string;
+  fetched_at?: string;
+}
+
+export interface TweetInteraction {
+  tweet_id: string;
+  interaction_type: InteractionType;
+  interaction_at?: string;
+  source?: string;
+  metadata?: Record<string, unknown>;
+  synced_at?: string;
 }
 
 export interface SyncStateInput {
@@ -46,12 +58,25 @@ export interface TweetVaultStats {
   total_links: number;
   tweets_with_embeddings: number;
   links_with_embeddings: number;
+  likes_count?: number;
+  bookmarks_count?: number;
   top_authors: string[];
   top_domains: string[];
   last_sync: string | null;
 }
 
+const TWEET_CHUNK_SIZE = 200;
+const LINK_CHUNK_SIZE = 200;
+const INTERACTION_CHUNK_SIZE = 500;
 let supabaseClient: any = null;
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const result: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    result.push(items.slice(i, i + size));
+  }
+  return result;
+}
 
 export function getSupabaseClient(): any {
   if (supabaseClient) return supabaseClient;
@@ -73,106 +98,193 @@ export function getSupabaseClient(): any {
   return supabaseClient;
 }
 
-export async function upsertTweets(
-  tweets: Tweet[],
-): Promise<{ added: string[]; updated: string[] }> {
+async function getExistingTweetIds(tweetIds: string[]): Promise<Set<string>> {
   const supabase = getSupabaseClient();
-  const added: string[] = [];
-  const updated: string[] = [];
+  const existing = new Set<string>();
 
-  for (const tweet of tweets) {
-    // Check if tweet exists
-    const { data: existing } = await supabase
+  for (const idChunk of chunk(tweetIds, INTERACTION_CHUNK_SIZE)) {
+    const { data, error } = await supabase
       .from("tweets")
       .select("tweet_id")
-      .eq("tweet_id", tweet.tweet_id)
-      .single();
+      .in("tweet_id", idChunk);
 
-    if (existing) {
-      // Update existing tweet
-      const { error } = await supabase
-        .from("tweets")
-        .update({
-          author_username: tweet.author_username,
-          author_name: tweet.author_name ?? null,
-          author_profile_image: tweet.author_profile_image ?? null,
-          content: tweet.content,
-          created_at: tweet.created_at ?? null,
-          media_urls: tweet.media_urls ?? null,
-          metrics: tweet.metrics ?? null,
-          raw_data: tweet.raw_data ?? null,
-        })
-        .eq("tweet_id", tweet.tweet_id);
-
-      if (!error) updated.push(tweet.tweet_id);
-    } else {
-      // Insert new tweet
-      const { error } = await supabase.from("tweets").insert({
-        tweet_id: tweet.tweet_id,
-        author_username: tweet.author_username,
-        author_name: tweet.author_name ?? null,
-        author_profile_image: tweet.author_profile_image ?? null,
-        content: tweet.content,
-        created_at: tweet.created_at ?? null,
-        media_urls: tweet.media_urls ?? null,
-        metrics: tweet.metrics ?? null,
-        raw_data: tweet.raw_data ?? null,
-        fetched_at: new Date().toISOString(),
-      });
-
-      if (!error) added.push(tweet.tweet_id);
+    if (error) throw error;
+    for (const row of data ?? []) {
+      if (row.tweet_id) existing.add(row.tweet_id);
     }
   }
 
+  return existing;
+}
+
+export async function upsertTweets(
+  tweets: Tweet[],
+): Promise<{ added: string[]; updated: string[] }> {
+  if (tweets.length === 0) {
+    return { added: [], updated: [] };
+  }
+
+  const supabase = getSupabaseClient();
+  const deduped = new Map<string, Tweet>();
+  for (const tweet of tweets) {
+    deduped.set(tweet.tweet_id, tweet);
+  }
+
+  const normalizedTweets = [...deduped.values()];
+  const tweetIds = normalizedTweets.map((tweet) => tweet.tweet_id);
+  const existingBefore = await getExistingTweetIds(tweetIds);
+  const now = new Date().toISOString();
+
+  for (const tweetChunk of chunk(normalizedTweets, TWEET_CHUNK_SIZE)) {
+    const payload = tweetChunk.map((tweet) => ({
+      tweet_id: tweet.tweet_id,
+      author_username: tweet.author_username,
+      author_name: tweet.author_name ?? null,
+      author_profile_image: tweet.author_profile_image ?? null,
+      content: tweet.content,
+      created_at: tweet.created_at ?? null,
+      media_urls: tweet.media_urls ?? null,
+      metrics: tweet.metrics ?? null,
+      raw_data: tweet.raw_data ?? null,
+      fetched_at: tweet.fetched_at ?? now,
+    }));
+
+    const { error } = await supabase
+      .from("tweets")
+      .upsert(payload, { onConflict: "tweet_id" });
+
+    if (error) throw error;
+  }
+
+  const added = tweetIds.filter((id) => !existingBefore.has(id));
+  const updated = tweetIds.filter((id) => existingBefore.has(id));
   return { added, updated };
 }
 
 export async function upsertLinks(
   links: Link[],
 ): Promise<{ inserted: number; updated: number }> {
+  if (links.length === 0) {
+    return { inserted: 0, updated: 0 };
+  }
+
   const supabase = getSupabaseClient();
   let inserted = 0;
   let updated = 0;
 
+  const deduped = new Map<string, Link>();
   for (const link of links) {
-    // Check if link exists
-    const { data: existing } = await supabase
+    deduped.set(`${link.tweet_id}::${link.url}`, link);
+  }
+
+  const normalizedLinks = [...deduped.values()];
+
+  for (const linkChunk of chunk(normalizedLinks, LINK_CHUNK_SIZE)) {
+    const tweetIds = [...new Set(linkChunk.map((link) => link.tweet_id))];
+    const { data: existingRows, error: existingError } = await supabase
       .from("links")
-      .select("id")
-      .eq("tweet_id", link.tweet_id)
-      .eq("url", link.url)
-      .single();
+      .select("tweet_id,url")
+      .in("tweet_id", tweetIds);
 
-    if (existing) {
-      // Update existing link
-      const { error } = await supabase
-        .from("links")
-        .update({
-          expanded_url: link.expanded_url ?? null,
-          display_url: link.display_url ?? null,
-          domain: link.domain ?? null,
-          title: link.title ?? null,
-          description: link.description ?? null,
-          og_image: link.og_image ?? null,
-        })
-        .eq("id", existing.id);
+    if (existingError) throw existingError;
 
-      if (!error) updated++;
-    } else {
-      // Insert new link
-      const { error } = await supabase.from("links").insert({
-        tweet_id: link.tweet_id,
-        url: link.url,
-        expanded_url: link.expanded_url ?? null,
-        display_url: link.display_url ?? null,
-        domain: link.domain ?? null,
-        title: link.title ?? null,
-        description: link.description ?? null,
-        og_image: link.og_image ?? null,
-      });
+    const existingKeys = new Set<string>(
+      (existingRows ?? []).map((row: { tweet_id: string; url: string }) =>
+        `${row.tweet_id}::${row.url}`,
+      ),
+    );
 
-      if (!error) inserted++;
-    }
+    inserted += linkChunk.filter(
+      (link) => !existingKeys.has(`${link.tweet_id}::${link.url}`),
+    ).length;
+    updated += linkChunk.filter((link) =>
+      existingKeys.has(`${link.tweet_id}::${link.url}`),
+    ).length;
+
+    const payload = linkChunk.map((link) => ({
+      tweet_id: link.tweet_id,
+      url: link.url,
+      expanded_url: link.expanded_url ?? null,
+      display_url: link.display_url ?? null,
+      domain: link.domain ?? null,
+    }));
+
+    const { error } = await supabase
+      .from("links")
+      .upsert(payload, { onConflict: "tweet_id,url" });
+
+    if (error) throw error;
+  }
+
+  return { inserted, updated };
+}
+
+export async function upsertTweetInteractions(
+  interactions: TweetInteraction[],
+): Promise<{ inserted: number; updated: number }> {
+  if (interactions.length === 0) {
+    return { inserted: 0, updated: 0 };
+  }
+
+  const supabase = getSupabaseClient();
+  const deduped = new Map<string, TweetInteraction>();
+  for (const interaction of interactions) {
+    deduped.set(
+      `${interaction.tweet_id}::${interaction.interaction_type}`,
+      interaction,
+    );
+  }
+
+  const normalized = [...deduped.values()];
+  const tweetIds = [...new Set(normalized.map((item) => item.tweet_id))];
+  const existingTweets = await getExistingTweetIds(tweetIds);
+  const filtered = normalized.filter((item) => existingTweets.has(item.tweet_id));
+
+  if (filtered.length === 0) {
+    return { inserted: 0, updated: 0 };
+  }
+
+  let inserted = 0;
+  let updated = 0;
+
+  for (const interactionChunk of chunk(filtered, INTERACTION_CHUNK_SIZE)) {
+    const ids = [...new Set(interactionChunk.map((i) => i.tweet_id))];
+    const { data: existingRows, error: existingError } = await supabase
+      .from("tweet_interactions")
+      .select("tweet_id,interaction_type")
+      .in("tweet_id", ids);
+
+    if (existingError) throw existingError;
+
+    const existingKeys = new Set<string>(
+      (existingRows ?? []).map(
+        (row: { tweet_id: string; interaction_type: InteractionType }) =>
+          `${row.tweet_id}::${row.interaction_type}`,
+      ),
+    );
+
+    inserted += interactionChunk.filter(
+      (item) =>
+        !existingKeys.has(`${item.tweet_id}::${item.interaction_type}`),
+    ).length;
+    updated += interactionChunk.filter((item) =>
+      existingKeys.has(`${item.tweet_id}::${item.interaction_type}`),
+    ).length;
+
+    const payload = interactionChunk.map((interaction) => ({
+      tweet_id: interaction.tweet_id,
+      interaction_type: interaction.interaction_type,
+      interaction_at: interaction.interaction_at ?? null,
+      source: interaction.source ?? "bird",
+      metadata: interaction.metadata ?? {},
+      synced_at: interaction.synced_at ?? new Date().toISOString(),
+    }));
+
+    const { error } = await supabase
+      .from("tweet_interactions")
+      .upsert(payload, { onConflict: "tweet_id,interaction_type" });
+
+    if (error) throw error;
   }
 
   return { inserted, updated };
@@ -197,10 +309,41 @@ export async function recordSync(state: SyncStateInput): Promise<void> {
   }
 }
 
+function rowsToTopList(rows: Array<{ value: string | null }>): string[] {
+  return rows.filter((row) => row.value).map((row) => row.value as string);
+}
+
 export async function getStats(): Promise<TweetVaultStats> {
   const supabase = getSupabaseClient();
 
-  // Get total counts
+  const { data: rpcStats, error: rpcError } = await supabase.rpc("vault_stats");
+  if (!rpcError && rpcStats) {
+    const topAuthors = Array.isArray(rpcStats.top_authors)
+      ? rpcStats.top_authors
+          .map((row: { author_username?: string }) => row.author_username)
+          .filter(Boolean)
+      : [];
+
+    const topDomains = Array.isArray(rpcStats.top_domains)
+      ? rpcStats.top_domains
+          .map((row: { domain?: string }) => row.domain)
+          .filter(Boolean)
+      : [];
+
+    return {
+      total_tweets: rpcStats.total_tweets ?? 0,
+      total_links: rpcStats.total_links ?? 0,
+      tweets_with_embeddings: rpcStats.tweets_with_embeddings ?? 0,
+      links_with_embeddings: rpcStats.links_with_embeddings ?? 0,
+      likes_count: rpcStats.likes_count ?? 0,
+      bookmarks_count: rpcStats.bookmarks_count ?? 0,
+      top_authors: topAuthors,
+      top_domains: topDomains,
+      last_sync: rpcStats.last_sync?.last_sync_at ?? null,
+    };
+  }
+
+  // Fallback for pre-migration environments.
   const { count: totalTweets } = await supabase
     .from("tweets")
     .select("*", { count: "exact", head: true });
@@ -219,7 +362,6 @@ export async function getStats(): Promise<TweetVaultStats> {
     .select("*", { count: "exact", head: true })
     .not("embedding", "is", null);
 
-  // Get top authors
   const { data: authorData } = await supabase
     .from("tweets")
     .select("author_username");
@@ -227,8 +369,7 @@ export async function getStats(): Promise<TweetVaultStats> {
   const authorCounts: Record<string, number> = {};
   (authorData ?? []).forEach((t: any) => {
     if (t.author_username) {
-      authorCounts[t.author_username] =
-        (authorCounts[t.author_username] || 0) + 1;
+      authorCounts[t.author_username] = (authorCounts[t.author_username] || 0) + 1;
     }
   });
   const topAuthors = Object.entries(authorCounts)
@@ -236,24 +377,17 @@ export async function getStats(): Promise<TweetVaultStats> {
     .slice(0, 10)
     .map(([author]) => author);
 
-  // Get top domains
   const { data: domainData } = await supabase
     .from("links")
     .select("domain")
     .not("domain", "is", null);
 
-  const domainCounts: Record<string, number> = {};
-  (domainData ?? []).forEach((l: any) => {
-    if (l.domain) {
-      domainCounts[l.domain] = (domainCounts[l.domain] || 0) + 1;
-    }
-  });
-  const topDomains = Object.entries(domainCounts)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 10)
-    .map(([domain]) => domain);
+  const topDomains = rowsToTopList(
+    (domainData ?? []).map((item: { domain: string | null }) => ({
+      value: item.domain,
+    })),
+  ).slice(0, 10);
 
-  // Get last sync
   const { data: syncData } = await supabase
     .from("sync_state")
     .select("last_sync_at")
@@ -356,45 +490,91 @@ export async function updateLinkEmbedding(
   if (error) throw error;
 }
 
-export async function getLinksWithoutMetadata(limit: number): Promise<Link[]> {
+export async function getLinksWithoutMetadata(
+  limit: number,
+  retryCooldownHours = 24,
+): Promise<Link[]> {
   const supabase = getSupabaseClient();
 
-  const { data, error } = await supabase
+  const links: any[] = [];
+
+  const { data: freshRows, error: freshError } = await supabase
     .from("links")
     .select("*")
     .is("title", null)
     .is("fetch_error", null)
     .limit(limit);
 
-  if (error) throw error;
-  return (data ?? []).map((row: any) => ({
-    id: row.id,
-    tweet_id: row.tweet_id,
-    url: row.url,
-    expanded_url: row.expanded_url ?? undefined,
-    display_url: row.display_url ?? undefined,
-    domain: row.domain ?? undefined,
-    title: row.title ?? undefined,
-    description: row.description ?? undefined,
-    og_image: row.og_image ?? undefined,
-  }));
+  if (freshError) throw freshError;
+  links.push(...(freshRows ?? []));
+
+  if (links.length < limit) {
+    const cutoff = new Date(
+      Date.now() - retryCooldownHours * 60 * 60 * 1000,
+    ).toISOString();
+
+    const { data: retryRows, error: retryError } = await supabase
+      .from("links")
+      .select("*")
+      .is("title", null)
+      .not("fetch_error", "is", null)
+      .lt("fetched_at", cutoff)
+      .limit(limit - links.length);
+
+    if (retryError) throw retryError;
+    links.push(...(retryRows ?? []));
+  }
+
+  const seen = new Set<number>();
+  return links
+    .filter((row) => {
+      if (!row.id || seen.has(row.id)) return false;
+      seen.add(row.id);
+      return true;
+    })
+    .map((row: any) => ({
+      id: row.id,
+      tweet_id: row.tweet_id,
+      url: row.url,
+      expanded_url: row.expanded_url ?? undefined,
+      display_url: row.display_url ?? undefined,
+      domain: row.domain ?? undefined,
+      title: row.title ?? undefined,
+      description: row.description ?? undefined,
+      og_image: row.og_image ?? undefined,
+      fetch_error: row.fetch_error ?? undefined,
+      fetched_at: row.fetched_at ?? undefined,
+    }));
 }
 
 export async function updateLinkMetadata(
   linkId: number,
-  metadata: Partial<Link> & { fetch_error?: string },
+  metadata: Omit<Partial<Link>, "fetch_error"> & { fetch_error?: string | null },
 ): Promise<void> {
   const supabase = getSupabaseClient();
+  const updates: Record<string, unknown> = {
+    fetched_at: new Date().toISOString(),
+  };
+
+  if (Object.prototype.hasOwnProperty.call(metadata, "title")) {
+    updates.title = metadata.title ?? null;
+  }
+  if (Object.prototype.hasOwnProperty.call(metadata, "description")) {
+    updates.description = metadata.description ?? null;
+  }
+  if (Object.prototype.hasOwnProperty.call(metadata, "og_image")) {
+    updates.og_image = metadata.og_image ?? null;
+  }
+  if (Object.prototype.hasOwnProperty.call(metadata, "domain")) {
+    updates.domain = metadata.domain ?? null;
+  }
+  if (Object.prototype.hasOwnProperty.call(metadata, "fetch_error")) {
+    updates.fetch_error = metadata.fetch_error ?? null;
+  }
 
   const { error } = await supabase
     .from("links")
-    .update({
-      title: metadata.title ?? null,
-      description: metadata.description ?? null,
-      og_image: metadata.og_image ?? null,
-      fetch_error: metadata.fetch_error ?? null,
-      fetched_at: new Date().toISOString(),
-    })
+    .update(updates)
     .eq("id", linkId);
 
   if (error) throw error;

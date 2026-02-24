@@ -6,18 +6,32 @@ import {
 } from "../utils/supabase.js";
 import { extractUrlsFromTweet } from "./tweets.js";
 
-// Domains to skip (tracking pixels, known non-content)
 const SKIP_DOMAINS = new Set([
-  "t.co", // We expand these
+  "t.co",
   "pic.twitter.com",
   "twitter.com",
   "x.com",
   "pbs.twimg.com",
 ]);
 
-/**
- * Extract domain from URL
- */
+type MetadataErrorType =
+  | "timeout"
+  | "network"
+  | "http"
+  | "non_html"
+  | "invalid_url"
+  | "unknown";
+
+interface MetadataResult {
+  ok: boolean;
+  title?: string;
+  description?: string;
+  og_image?: string;
+  domain?: string;
+  errorType?: MetadataErrorType;
+  errorMessage?: string;
+}
+
 function extractDomain(url: string): string | null {
   try {
     const parsed = new URL(url);
@@ -27,13 +41,9 @@ function extractDomain(url: string): string | null {
   }
 }
 
-/**
- * Extract and insert links from tweets
- */
 export async function extractLinksFromTweets(
   tweets: Tweet[],
 ): Promise<{ inserted: number; skipped: number }> {
-  let inserted = 0;
   let skipped = 0;
   const linkBatch: Array<{
     tweet_id: string;
@@ -49,16 +59,14 @@ export async function extractLinksFromTweets(
 
     for (const urlData of urls) {
       const domain = extractDomain(urlData.expanded_url || urlData.url);
-
-      // Skip certain domains
       if (domain && SKIP_DOMAINS.has(domain)) {
-        skipped++;
+        skipped += 1;
         continue;
       }
 
       const key = `${tweet.tweet_id}::${urlData.url}`;
       if (seen.has(key)) {
-        skipped++;
+        skipped += 1;
         continue;
       }
       seen.add(key);
@@ -73,75 +81,105 @@ export async function extractLinksFromTweets(
     }
   }
 
-  const chunkSize = 100;
-  for (let i = 0; i < linkBatch.length; i += chunkSize) {
-    const chunk = linkBatch.slice(i, i + chunkSize);
-    const result = await upsertLinks(chunk);
-    inserted += result.inserted;
-  }
-
-  return { inserted, skipped };
+  const result = await upsertLinks(linkBatch);
+  return { inserted: result.inserted, skipped };
 }
 
-/**
- * Fetch metadata for a single URL
- */
-async function fetchLinkMetadata(
-  url: string,
-): Promise<{ title?: string; description?: string; og_image?: string } | null> {
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
+function normalizeMetaTagValue(value?: string): string | undefined {
+  if (!value) return undefined;
+  return value.trim().replace(/\s+/g, " ").slice(0, 2000) || undefined;
+}
 
+async function fetchLinkMetadata(url: string): Promise<MetadataResult> {
+  const domain = extractDomain(url) ?? undefined;
+  if (!domain) {
+    return {
+      ok: false,
+      errorType: "invalid_url",
+      errorMessage: "invalid-url",
+    };
+  }
+
+  if (SKIP_DOMAINS.has(domain)) {
+    return { ok: true, domain };
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+
+  try {
     const response = await fetch(url, {
       signal: controller.signal,
       headers: {
         "User-Agent":
           "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-        Accept:
-          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       },
     });
 
-    clearTimeout(timeout);
-
     if (!response.ok) {
-      return null;
+      return {
+        ok: false,
+        domain,
+        errorType: "http",
+        errorMessage: `http-${response.status}`,
+      };
+    }
+
+    const contentType = response.headers.get("content-type") || "";
+    if (!contentType.toLowerCase().includes("text/html")) {
+      return {
+        ok: false,
+        domain,
+        errorType: "non_html",
+        errorMessage: "content-not-html",
+      };
     }
 
     const html = await response.text();
-
-    // Extract title
     const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
     const ogTitleMatch = html.match(
       /<meta[^>]*property=["']og:title["'][^>]*content=["']([^"']+)["']/i,
     );
-    const title = ogTitleMatch?.[1] || titleMatch?.[1];
-
-    // Extract description
     const ogDescMatch = html.match(
       /<meta[^>]*property=["']og:description["'][^>]*content=["']([^"']+)["']/i,
     );
     const descMatch = html.match(
       /<meta[^>]*name=["']description["'][^>]*content=["']([^"']+)["']/i,
     );
-    const description = ogDescMatch?.[1] || descMatch?.[1];
-
-    // Extract og:image
     const ogImageMatch = html.match(
       /<meta[^>]*property=["']og:image["'][^>]*content=["']([^"']+)["']/i,
     );
-    const og_image = ogImageMatch?.[1];
 
-    return { title, description, og_image };
-  } catch {
-    return null;
+    return {
+      ok: true,
+      domain,
+      title: normalizeMetaTagValue(ogTitleMatch?.[1] || titleMatch?.[1]),
+      description: normalizeMetaTagValue(ogDescMatch?.[1] || descMatch?.[1]),
+      og_image: normalizeMetaTagValue(ogImageMatch?.[1]),
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "unknown-error";
+    if (message.toLowerCase().includes("abort")) {
+      return {
+        ok: false,
+        domain,
+        errorType: "timeout",
+        errorMessage: "timeout",
+      };
+    }
+
+    return {
+      ok: false,
+      domain,
+      errorType: "network",
+      errorMessage: message.slice(0, 180),
+    };
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
-/**
- * Fetch metadata for all links that haven't been fetched yet
- */
 export async function fetchAllLinkMetadata(
   concurrency = 5,
   batchSize = 50,
@@ -149,43 +187,45 @@ export async function fetchAllLinkMetadata(
   let processed = 0;
   let failed = 0;
 
-  // Get links without metadata
-  const links = await getLinksWithoutMetadata(batchSize);
-
+  const links = await getLinksWithoutMetadata(batchSize, 24);
   if (links.length === 0) {
     return { processed: 0, failed: 0 };
   }
 
-  // Process in batches with concurrency
-  for (let i = 0; i < links.length; i += concurrency) {
-    const batch = links.slice(i, i + concurrency);
+  const safeConcurrency = Math.max(1, concurrency);
+
+  for (let i = 0; i < links.length; i += safeConcurrency) {
+    const batch = links.slice(i, i + safeConcurrency);
 
     const results = await Promise.allSettled(
       batch.map(async (link) => {
         const url = link.expanded_url || link.url;
         const metadata = await fetchLinkMetadata(url);
 
-        if (metadata) {
+        if (metadata.ok) {
           await updateLinkMetadata(link.id!, {
             title: metadata.title,
             description: metadata.description,
             og_image: metadata.og_image,
+            domain: metadata.domain,
+            fetch_error: null,
           });
           return true;
-        } else {
-          await updateLinkMetadata(link.id!, {
-            fetch_error: "Failed to fetch metadata",
-          });
-          return false;
         }
+
+        await updateLinkMetadata(link.id!, {
+          domain: metadata.domain,
+          fetch_error: `${metadata.errorType ?? "unknown"}:${metadata.errorMessage ?? "metadata-fetch-failed"}`,
+        });
+        return false;
       }),
     );
 
     for (const result of results) {
       if (result.status === "fulfilled" && result.value) {
-        processed++;
+        processed += 1;
       } else {
-        failed++;
+        failed += 1;
       }
     }
   }
