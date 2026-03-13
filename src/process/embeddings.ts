@@ -8,9 +8,19 @@ import {
   Link,
 } from "../utils/supabase.js";
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+let openaiClient: OpenAI | null = null;
+
+function getOpenAIClient(): OpenAI {
+  if (openaiClient) return openaiClient;
+
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    throw new Error("OPENAI_API_KEY environment variable is missing or empty");
+  }
+
+  openaiClient = new OpenAI({ apiKey });
+  return openaiClient;
+}
 
 const EMBEDDING_MODEL = "text-embedding-3-small";
 const MAX_INPUT_CHARS = 8000;
@@ -56,7 +66,7 @@ function clampText(text: string, maxInputChars: number): string {
 }
 
 async function generateEmbeddings(texts: string[]): Promise<number[][]> {
-  const response = await openai.embeddings.create({
+  const response = await getOpenAIClient().embeddings.create({
     model: EMBEDDING_MODEL,
     input: texts,
   });
