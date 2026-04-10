@@ -151,13 +151,30 @@ The GraphQL response structure:
 
 ---
 
-## Importing to Tweet Vault
+## Direct Export to Obsidian (Fastest Path to the Brain)
 
-After extraction, import your bookmarks:
+If the goal is to get saved tweets into the Obsidian brain without depending on Supabase credentials, export directly into the inbox:
 
 ```bash
-cd ~/projects/personal/tweet-vault
-npm run import path/to/bookmarks.json
+cd ~/projects/tweet-vault
+bun run export:obsidian -- --bookmarks-only --count=20
+```
+
+Default output:
+
+```text
+/Users/minimac/projects/obsidian-memory/00-Inbox/feeds/twitter
+```
+
+This uses the same Safari-authenticated Bird flow as normal sync, but writes deterministic markdown inbox notes instead of upserting into Supabase.
+
+## Importing to Tweet Vault
+
+After extraction, import your bookmarks into the canonical Supabase-backed store:
+
+```bash
+cd ~/projects/tweet-vault
+bun run import path/to/bookmarks.json
 ```
 
 The import script handles multiple formats:

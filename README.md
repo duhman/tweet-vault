@@ -90,7 +90,24 @@ bun run sync --likes-only
 bun run sync --bookmarks-only
 ```
 
-**Option 2: Manual JSON Export**
+**Option 2: Direct Obsidian Export (No Supabase Required)**
+
+If the immediate goal is to get saved tweets into the brain, you can bypass Supabase and export straight into the Obsidian inbox using your Safari-authenticated X session:
+
+```bash
+# Export recent bookmarks to the Obsidian inbox
+bun run export:obsidian -- --bookmarks-only --count=20
+
+# Export likes instead
+bun run export:obsidian -- --likes-only --count=20
+
+# Override destination folder if needed
+bun run export:obsidian -- --bookmarks-only --output=/path/to/00-Inbox/feeds/twitter
+```
+
+This creates deterministic markdown notes suitable for downstream triage and promotion in `obsidian-memory`.
+
+**Option 3: Manual JSON Export**
 
 ```bash
 # Export bookmarks using twitter-web-exporter browser extension
@@ -147,6 +164,7 @@ Once configured, ask Claude things like:
 | ----------------------- | ---------------------------------------- |
 | `bun run sync`          | Sync bookmarks + likes from Twitter via Bird |
 | `bun run sync:all`      | Sync all available pages (bookmarks + likes) |
+| `bun run export:obsidian -- --bookmarks-only --count=20` | Export recent tweets directly into Obsidian inbox |
 | `bun run import <file>` | Import tweets from JSON export           |
 | `bun run mcp`           | Run MCP server standalone                |
 | `bun run typecheck`     | TypeScript type checking                 |

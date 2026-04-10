@@ -11,6 +11,7 @@
     "import": "bun run scripts/initial-import.ts",
     "sync": "bun run scripts/sync-from-bird.ts",
     "sync:all": "bun run scripts/sync-from-bird.ts --all",
+    "export:obsidian": "bun run scripts/export-to-obsidian.ts",
     "process": "bun run src/index.ts process",
     "mcp": "bun run mcp-server/index.ts",
     "typecheck": "tsc --noEmit"
