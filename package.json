@@ -7,14 +7,17 @@
   "scripts": {
     "dev": "bun --watch src/index.ts",
     "build": "tsc",
-    "start": "bun run dist/index.js",
+    "start": "bun run dist/src/index.js",
     "import": "bun run scripts/initial-import.ts",
     "sync": "bun run scripts/sync-from-bird.ts",
     "sync:all": "bun run scripts/sync-from-bird.ts --all",
     "export:obsidian": "bun run scripts/export-to-obsidian.ts",
     "process": "bun run src/index.ts process",
     "mcp": "bun run mcp-server/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "bun test ./tests/*.test.ts",
+    "smoke:mcp": "bun run mcp -- --healthcheck",
+    "verify": "bun run typecheck && bun run build && bun run test"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.0",

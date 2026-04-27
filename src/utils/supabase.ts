@@ -1,5 +1,10 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { createClient } from "@supabase/supabase-js";
+import {
+  DEFAULT_METADATA_RETRY_COOLDOWN_HOURS,
+  isLinkReadyForEmbedding,
+  selectLinksForMetadataProcessing,
+} from "../../shared/processing.js";
 
 export type InteractionType = "bookmark" | "like";
 
@@ -441,22 +446,24 @@ export async function getLinksWithoutEmbeddings(
   const { data, error } = await supabase
     .from("links")
     .select("*")
-    .is("embedding", null)
-    .not("title", "is", null)
-    .limit(limit);
+    .limit(Math.max(limit * 3, limit));
 
   if (error) throw error;
-  return (data ?? []).map((row: any) => ({
-    id: row.id,
-    tweet_id: row.tweet_id,
-    url: row.url,
-    expanded_url: row.expanded_url ?? undefined,
-    display_url: row.display_url ?? undefined,
-    domain: row.domain ?? undefined,
-    title: row.title ?? undefined,
-    description: row.description ?? undefined,
-    og_image: row.og_image ?? undefined,
-  }));
+  return (data ?? [])
+    .map((row: any) => ({
+      id: row.id,
+      tweet_id: row.tweet_id,
+      url: row.url,
+      expanded_url: row.expanded_url ?? undefined,
+      display_url: row.display_url ?? undefined,
+      domain: row.domain ?? undefined,
+      title: row.title ?? undefined,
+      description: row.description ?? undefined,
+      og_image: row.og_image ?? undefined,
+      embedding: row.embedding ?? undefined,
+    }))
+    .filter((row: any) => isLinkReadyForEmbedding(row))
+    .slice(0, limit);
 }
 
 export async function updateTweetEmbedding(
@@ -492,47 +499,20 @@ export async function updateLinkEmbedding(
 
 export async function getLinksWithoutMetadata(
   limit: number,
-  retryCooldownHours = 24,
+  retryCooldownHours = DEFAULT_METADATA_RETRY_COOLDOWN_HOURS,
 ): Promise<Link[]> {
   const supabase = getSupabaseClient();
-
-  const links: any[] = [];
-
-  const { data: freshRows, error: freshError } = await supabase
+  const { data, error } = await supabase
     .from("links")
     .select("*")
     .is("title", null)
-    .is("fetch_error", null)
-    .limit(limit);
+    .order("id", { ascending: true })
+    .limit(Math.max(limit * 4, 200));
 
-  if (freshError) throw freshError;
-  links.push(...(freshRows ?? []));
+  if (error) throw error;
 
-  if (links.length < limit) {
-    const cutoff = new Date(
-      Date.now() - retryCooldownHours * 60 * 60 * 1000,
-    ).toISOString();
-
-    const { data: retryRows, error: retryError } = await supabase
-      .from("links")
-      .select("*")
-      .is("title", null)
-      .not("fetch_error", "is", null)
-      .lt("fetched_at", cutoff)
-      .limit(limit - links.length);
-
-    if (retryError) throw retryError;
-    links.push(...(retryRows ?? []));
-  }
-
-  const seen = new Set<number>();
-  return links
-    .filter((row) => {
-      if (!row.id || seen.has(row.id)) return false;
-      seen.add(row.id);
-      return true;
-    })
-    .map((row: any) => ({
+  return selectLinksForMetadataProcessing(
+    (data ?? []).map((row: any) => ({
       id: row.id,
       tweet_id: row.tweet_id,
       url: row.url,
@@ -544,7 +524,10 @@ export async function getLinksWithoutMetadata(
       og_image: row.og_image ?? undefined,
       fetch_error: row.fetch_error ?? undefined,
       fetched_at: row.fetched_at ?? undefined,
-    }));
+    })),
+    limit,
+    retryCooldownHours,
+  );
 }
 
 export async function updateLinkMetadata(

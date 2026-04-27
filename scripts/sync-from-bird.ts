@@ -25,6 +25,7 @@ import {
   upsertTweetInteractions,
   type InteractionType,
 } from "../src/utils/supabase.js";
+import { fileURLToPath } from "url";
 
 config();
 
@@ -46,7 +47,7 @@ interface TimelineFetchResult {
   nextCursor?: string;
 }
 
-function parseOptions(args: string[]): CliOptions {
+export function parseOptions(args: string[]): CliOptions {
   const fetchAll = args.includes("--all");
   const bookmarksOnly = args.includes("--bookmarks-only");
   const likesOnly = args.includes("--likes-only");
@@ -149,7 +150,7 @@ async function fetchTimeline(
   };
 }
 
-async function main() {
+export async function main() {
   const options = parseOptions(process.argv.slice(2));
 
   console.log("🐦 Tweet Vault - Sync from Bird\n");
@@ -307,7 +308,11 @@ async function main() {
   );
 }
 
-main().catch((error) => {
-  console.error("Fatal error:", error);
-  process.exit(1);
-});
+const isDirectExecution = process.argv[1] === fileURLToPath(import.meta.url);
+
+if (isDirectExecution) {
+  main().catch((error) => {
+    console.error("Fatal error:", error);
+    process.exit(1);
+  });
+}

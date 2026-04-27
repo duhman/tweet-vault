@@ -22,6 +22,7 @@ import {
   type SearchResult,
   type TweetData,
 } from "@steipete/bird";
+import { fileURLToPath } from "url";
 
 config();
 
@@ -37,7 +38,7 @@ interface CliOptions {
   output: string;
 }
 
-function parseOptions(args: string[]): CliOptions {
+export function parseOptions(args: string[]): CliOptions {
   const fetchAll = args.includes("--all");
   const bookmarksOnly = args.includes("--bookmarks-only");
   const likesOnly = args.includes("--likes-only");
@@ -188,7 +189,7 @@ function writeNotes(outputDir: string, kind: InteractionType, tweets: TweetData[
   return written;
 }
 
-async function main() {
+export async function main() {
   const options = parseOptions(process.argv.slice(2));
   console.log("🐦 Tweet Vault → Obsidian Export\n");
   console.log(`Output: ${options.output}\n`);
@@ -224,7 +225,11 @@ async function main() {
   console.log(`\n🎉 Export complete. New notes written: ${totalWritten}`);
 }
 
-main().catch((error) => {
-  console.error("Fatal error:", error);
-  process.exit(1);
-});
+const isDirectExecution = process.argv[1] === fileURLToPath(import.meta.url);
+
+if (isDirectExecution) {
+  main().catch((error) => {
+    console.error("Fatal error:", error);
+    process.exit(1);
+  });
+}

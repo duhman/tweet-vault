@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
 ## Overview
 
@@ -71,7 +71,7 @@ Apply `supabase/migrations/0014_fix_process_tweets_cron.sql` on existing environ
 
 | Path                                 | Purpose                            |
 | ------------------------------------ | ---------------------------------- |
-| `mcp-server/index.ts`                | MCP server (8 tools for Claude)     |
+| `mcp-server/index.ts`                | MCP server (8 tools for Codex)     |
 | `scripts/sync-from-bird.ts`          | Canonical sync for bookmarks + likes |
 | `src/process/*.ts`                   | Processing helpers (tweets, links) |
 | `src/utils/supabase.ts`              | Supabase client utilities          |

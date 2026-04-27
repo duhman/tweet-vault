@@ -14,25 +14,24 @@ import {
 import { config } from "dotenv";
 import { createClient } from "@supabase/supabase-js";
 import OpenAI from "openai";
+import { fileURLToPath } from "url";
+import { formatMissingEnvMessage, getMissingEnvVars } from "../shared/runtime.js";
 
 config();
 
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const openaiKey = process.env.OPENAI_API_KEY;
-const schema = process.env.SUPABASE_SCHEMA || "tweet_vault";
+const REQUIRED_ENV_VARS = [
+  "SUPABASE_URL",
+  "SUPABASE_SERVICE_ROLE_KEY",
+  "OPENAI_API_KEY",
+] as const;
 
-if (!supabaseUrl || !supabaseKey) {
-  throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required");
-}
-if (!openaiKey) {
-  throw new Error("OPENAI_API_KEY is required for embeddings");
-}
+type AppContext = {
+  schema: string;
+  supabase: any;
+  openai: OpenAI;
+};
 
-const supabase = createClient(supabaseUrl, supabaseKey, {
-  db: { schema },
-});
-const openai = new OpenAI({ apiKey: openaiKey });
+let appContext: AppContext | null = null;
 
 type InteractionFilter = "all" | "bookmark" | "like";
 
@@ -74,8 +73,81 @@ interface LinkSearchResult extends Link {
   similarity: number;
 }
 
+function getContext(): AppContext {
+  if (!appContext) {
+    throw new Error(
+      "Tweet Vault MCP has not been initialized. Start the server with valid environment variables first.",
+    );
+  }
+  return appContext;
+}
+
+function normalizeLimit(limit: number | undefined, defaultValue: number, max = 50): number {
+  if (!Number.isFinite(limit)) return defaultValue;
+  return Math.min(max, Math.max(1, Math.floor(limit as number)));
+}
+
+function normalizeThreshold(threshold: number | undefined, defaultValue = 0.5): number {
+  if (!Number.isFinite(threshold)) return defaultValue;
+  return Math.min(1, Math.max(0, threshold as number));
+}
+
+function normalizeUsername(username: string): string {
+  return username.replace(/^@+/, "").trim();
+}
+
+export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): string[] {
+  return getMissingEnvVars(env, [...REQUIRED_ENV_VARS]);
+}
+
+async function validateRemoteContracts(context: AppContext): Promise<void> {
+  const { supabase, schema } = context;
+
+  const checks = await Promise.all([
+    supabase.from("tweets").select("tweet_id", { head: true, count: "exact" }).limit(1),
+    supabase.from("links").select("id", { head: true, count: "exact" }).limit(1),
+    supabase
+      .from("tweet_interactions")
+      .select("tweet_id", { head: true, count: "exact" })
+      .limit(1),
+    supabase.rpc("vault_stats"),
+  ]);
+
+  const failingCheck = checks.find((result) => result.error);
+  if (failingCheck?.error) {
+    throw new Error(
+      `Supabase contract validation failed for schema "${schema}": ${failingCheck.error.message}. Verify that migrations are applied and the tweet_vault RPC/table contracts exist.`,
+    );
+  }
+}
+
+export async function createContext(
+  env: NodeJS.ProcessEnv = process.env,
+  options: { skipRemoteValidation?: boolean } = {},
+): Promise<AppContext> {
+  const missingEnv = validateEnvironment(env);
+  if (missingEnv.length > 0) {
+    throw new Error(formatMissingEnvMessage(missingEnv) ?? "Missing required environment variables.");
+  }
+
+  const schema = env.SUPABASE_SCHEMA || "tweet_vault";
+  const context: AppContext = {
+    schema,
+    supabase: createClient(env.SUPABASE_URL!, env.SUPABASE_SERVICE_ROLE_KEY!, {
+      db: { schema },
+    } as any),
+    openai: new OpenAI({ apiKey: env.OPENAI_API_KEY }),
+  };
+
+  if (!options.skipRemoteValidation) {
+    await validateRemoteContracts(context);
+  }
+
+  return context;
+}
+
 async function getEmbedding(text: string): Promise<number[]> {
-  const response = await openai.embeddings.create({
+  const response = await getContext().openai.embeddings.create({
     model: "text-embedding-3-small",
     input: text,
   });
@@ -95,10 +167,11 @@ async function searchTweetsRpc(
 ): Promise<TweetSearchResult[]> {
   const params = {
     query_embedding: JSON.stringify(embedding),
-    match_threshold: threshold,
-    match_count: Math.min(limit, 50),
+    match_threshold: normalizeThreshold(threshold),
+    match_count: normalizeLimit(limit, 10),
   };
 
+  const { supabase } = getContext();
   const { data, error } = await supabase.rpc("search_tweets", params);
 
   if (error) throw error;
@@ -313,11 +386,15 @@ async function handleSearchTweets(
   threshold = 0.5,
   interactionType: InteractionFilter = "all",
 ): Promise<string> {
+  if (!query.trim()) {
+    return "Please provide a non-empty search query.";
+  }
+
   const embedding = await getEmbedding(query);
   const results = await searchTweetsRpc(
     embedding,
-    threshold,
-    limit,
+    normalizeThreshold(threshold),
+    normalizeLimit(limit, 10),
     interactionType,
   );
 
@@ -352,12 +429,17 @@ async function handleSearchLinks(
   limit = 10,
   threshold = 0.5,
 ): Promise<string> {
+  if (!query.trim()) {
+    return "Please provide a non-empty link search query.";
+  }
+
   const embedding = await getEmbedding(query);
+  const { supabase } = getContext();
 
   const { data, error } = await supabase.rpc("search_links", {
     query_embedding: JSON.stringify(embedding),
-    match_threshold: threshold,
-    match_count: Math.min(limit, 50),
+    match_threshold: normalizeThreshold(threshold),
+    match_count: normalizeLimit(limit, 10),
   });
 
   if (error) throw error;
@@ -378,6 +460,7 @@ async function handleSearchLinks(
 }
 
 async function handleGetTweet(tweetId: string): Promise<string> {
+  const { supabase } = getContext();
   const { data: tweet, error } = await supabase
     .from("tweets")
     .select("*")
@@ -442,19 +525,25 @@ async function handleListLinksByDomain(
   domain: string,
   limit = 20,
 ): Promise<string> {
+  const normalizedDomain = domain.trim();
+  if (!normalizedDomain) {
+    return "Please provide a domain to search for.";
+  }
+
+  const { supabase } = getContext();
   const { data: links, error } = await supabase
     .from("links")
     .select("*")
-    .ilike("domain", `%${domain}%`)
-    .limit(limit);
+    .ilike("domain", `%${normalizedDomain}%`)
+    .limit(normalizeLimit(limit, 20, 100));
 
   if (error) throw error;
   if (!links || links.length === 0) {
-    return `No links found from domain "${domain}".`;
+    return `No links found from domain "${normalizedDomain}".`;
   }
 
   return (
-    `Found ${links.length} links from "${domain}":\n\n` +
+    `Found ${links.length} links from "${normalizedDomain}":\n\n` +
     links
       .map(
         (link: Link, i: number) => `${i + 1}. **${link.title || "Untitled"}**
@@ -466,9 +555,19 @@ async function handleListLinksByDomain(
 }
 
 async function handleFindRelated(topic: string, limit = 5): Promise<string> {
-  const embedding = await getEmbedding(topic);
+  if (!topic.trim()) {
+    return "Please provide a topic to search for.";
+  }
 
-  const tweetResults = await searchTweetsRpc(embedding, 0.5, limit, "all");
+  const embedding = await getEmbedding(topic);
+  const { supabase } = getContext();
+
+  const tweetResults = await searchTweetsRpc(
+    embedding,
+    0.5,
+    normalizeLimit(limit, 5, 25),
+    "all",
+  );
 
   const { data: links } = await supabase.rpc("search_links", {
     query_embedding: JSON.stringify(embedding),
@@ -512,6 +611,7 @@ async function handleFindRelated(topic: string, limit = 5): Promise<string> {
 }
 
 async function handleVaultStats(): Promise<string> {
+  const { supabase } = getContext();
   const { data: stats, error } = await supabase.rpc("vault_stats");
 
   if (!error && stats) {
@@ -574,21 +674,27 @@ async function handleListAuthors(
   username: string,
   limit = 20,
 ): Promise<string> {
+  const normalizedUsername = normalizeUsername(username);
+  if (!normalizedUsername) {
+    return "Please provide a Twitter username.";
+  }
+
+  const { supabase } = getContext();
   const { data: tweets, error } = await supabase
     .from("tweets")
     .select("*")
-    .ilike("author_username", username)
+    .ilike("author_username", normalizedUsername)
     .order("created_at", { ascending: false })
-    .limit(limit);
+    .limit(normalizeLimit(limit, 20, 100));
 
   if (error) throw error;
 
   if (!tweets || tweets.length === 0) {
-    return `No saved tweets found from @${username}.`;
+    return `No saved tweets found from @${normalizedUsername}.`;
   }
 
   return (
-    `Found ${tweets.length} saved tweets from @${username}:\n\n` +
+    `Found ${tweets.length} saved tweets from @${normalizedUsername}:\n\n` +
     tweets
       .map(
         (tweet: Tweet, i: number) => `${i + 1}. ${tweet.content.slice(0, 200)}${tweet.content.length > 200 ? "..." : ""}
@@ -684,5 +790,32 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 });
 
 const transport = new StdioServerTransport();
-console.error("Tweet Vault MCP Server v2.1.0 (Supabase) running on stdio");
-server.connect(transport).catch(console.error);
+
+export async function startServer(args = process.argv.slice(2)): Promise<void> {
+  const healthcheckMode = args.includes("--healthcheck");
+  const skipRemoteValidation =
+    args.includes("--skip-remote-validation") ||
+    process.env.MCP_SKIP_REMOTE_VALIDATION === "1";
+
+  appContext = await createContext(process.env, { skipRemoteValidation });
+
+  if (healthcheckMode) {
+    console.log(
+      `Tweet Vault MCP healthcheck passed for schema "${appContext.schema}"${skipRemoteValidation ? " (remote validation skipped)" : ""}.`,
+    );
+    return;
+  }
+
+  console.error("Tweet Vault MCP Server v2.1.0 (Supabase) running on stdio");
+  await server.connect(transport);
+}
+
+const isDirectExecution = process.argv[1] === fileURLToPath(import.meta.url);
+
+if (isDirectExecution) {
+  startServer().catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Tweet Vault MCP startup failed: ${message}`);
+    process.exit(1);
+  });
+}

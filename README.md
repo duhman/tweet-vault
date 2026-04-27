@@ -72,6 +72,8 @@ supabase functions deploy process-tweets --project-ref <your-project-ref>
 supabase secrets set OPENAI_API_KEY="<your-key>" --project-ref <your-project-ref>
 ```
 
+For existing deployments that still reference the legacy cron endpoint, apply `supabase/migrations/0014_fix_process_tweets_cron.sql` so pg_cron calls `process-tweets`.
+
 ### Import From Twitter
 
 **Option 1: Bird CLI (Recommended)**
@@ -167,7 +169,10 @@ Once configured, ask Claude things like:
 | `bun run export:obsidian -- --bookmarks-only --count=20` | Export recent tweets directly into Obsidian inbox |
 | `bun run import <file>` | Import tweets from JSON export           |
 | `bun run mcp`           | Run MCP server standalone                |
+| `bun run smoke:mcp`     | Validate MCP startup and env wiring      |
 | `bun run typecheck`     | TypeScript type checking                 |
+| `bun run test`          | Run regression tests                     |
+| `bun run verify`        | Run typecheck, build, and tests          |
 
 ## Environment Variables
 
@@ -228,6 +233,17 @@ curl -X POST "https://your-project.supabase.co/functions/v1/process-tweets" \
   -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
   -H "Content-Type: application/json" \
   -d '{}'
+```
+
+## Verification
+
+See [docs/VERIFICATION.md](/Users/minimac/projects/tweet-vault/docs/VERIFICATION.md) for the full checklist. The short version is:
+
+```bash
+bun run typecheck
+bun run build
+bun run test
+bun run smoke:mcp
 ```
 
 ## Tech Stack

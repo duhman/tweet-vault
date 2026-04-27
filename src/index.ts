@@ -79,6 +79,14 @@ async function importFromFile(filePath: string): Promise<void> {
     embeddings_generated:
       embeddingResult.tweets.processed + embeddingResult.links.processed,
     sync_type: "manual",
+    metadata: {
+      source_file: filePath,
+      imported_items: data.length,
+      metadata_processed: metadataResult.processed,
+      metadata_failed: metadataResult.failed,
+      tweet_embedding_failures: embeddingResult.tweets.failed,
+      link_embedding_failures: embeddingResult.links.failed,
+    },
   });
 
   console.log("\nSync complete!");

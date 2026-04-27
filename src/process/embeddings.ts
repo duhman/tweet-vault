@@ -4,9 +4,14 @@ import {
   getLinksWithoutEmbeddings,
   updateTweetEmbedding,
   updateLinkEmbedding,
-  Tweet,
-  Link,
 } from "../utils/supabase.js";
+import {
+  EMBEDDING_MODEL,
+  DEFAULT_MAX_INPUT_CHARS,
+  clampEmbeddingInput,
+  createTweetEmbeddingText,
+  createLinkEmbeddingText,
+} from "../../shared/processing.js";
 
 let openaiClient: OpenAI | null = null;
 
@@ -22,8 +27,6 @@ function getOpenAIClient(): OpenAI {
   return openaiClient;
 }
 
-const EMBEDDING_MODEL = "text-embedding-3-small";
-const MAX_INPUT_CHARS = 8000;
 const DEFAULT_RETRIES = 4;
 
 interface EmbeddingOptions {
@@ -60,11 +63,6 @@ async function withRetry<T>(
   throw lastError;
 }
 
-function clampText(text: string, maxInputChars: number): string {
-  if (text.length <= maxInputChars) return text;
-  return text.slice(0, maxInputChars);
-}
-
 async function generateEmbeddings(texts: string[]): Promise<number[][]> {
   const response = await getOpenAIClient().embeddings.create({
     model: EMBEDDING_MODEL,
@@ -72,28 +70,6 @@ async function generateEmbeddings(texts: string[]): Promise<number[][]> {
   });
 
   return response.data.map((item) => item.embedding);
-}
-
-function createTweetEmbeddingText(tweet: Tweet): string {
-  const parts = [tweet.content];
-
-  if (tweet.author_name) {
-    parts.push(`Author: ${tweet.author_name} (@${tweet.author_username})`);
-  } else {
-    parts.push(`Author: @${tweet.author_username}`);
-  }
-
-  return parts.join("\n");
-}
-
-function createLinkEmbeddingText(link: Link): string {
-  const parts: string[] = [];
-
-  if (link.title) parts.push(link.title);
-  if (link.description) parts.push(link.description);
-  if (link.domain) parts.push(`Domain: ${link.domain}`);
-
-  return parts.join("\n") || link.url;
 }
 
 async function processTweetEmbeddings(
@@ -110,7 +86,7 @@ async function processTweetEmbeddings(
   for (let i = 0; i < tweets.length; i += embedBatchSize) {
     const batch = tweets.slice(i, i + embedBatchSize);
     const texts = batch.map((tweet) =>
-      clampText(createTweetEmbeddingText(tweet), maxInputChars),
+      clampEmbeddingInput(createTweetEmbeddingText(tweet), maxInputChars),
     );
 
     try {
@@ -147,7 +123,7 @@ async function processLinkEmbeddings(
   for (let i = 0; i < links.length; i += embedBatchSize) {
     const batch = links.slice(i, i + embedBatchSize);
     const texts = batch.map((link) =>
-      clampText(createLinkEmbeddingText(link), maxInputChars),
+      clampEmbeddingInput(createLinkEmbeddingText(link), maxInputChars),
     );
 
     try {
@@ -185,7 +161,10 @@ export async function processAllEmbeddings(
   const batchSize = Math.max(10, options.batchSize ?? concurrency * 20);
   const embedBatchSize = Math.max(1, options.embedBatchSize ?? Math.min(20, concurrency * 5));
   const maxRounds = Math.max(1, options.maxRounds ?? 10);
-  const maxInputChars = Math.max(500, options.maxInputChars ?? MAX_INPUT_CHARS);
+  const maxInputChars = Math.max(
+    500,
+    options.maxInputChars ?? DEFAULT_MAX_INPUT_CHARS,
+  );
 
   const tweetStats = { processed: 0, failed: 0 };
   const linkStats = { processed: 0, failed: 0 };

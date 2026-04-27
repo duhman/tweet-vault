@@ -14,10 +14,11 @@ import {
 } from "../src/process/links.js";
 import { processAllEmbeddings } from "../src/process/embeddings.js";
 import { recordSync, upsertTweetInteractions } from "../src/utils/supabase.js";
+import { fileURLToPath } from "url";
 
 config();
 
-async function main() {
+export async function main() {
   const filePath = process.argv[2];
 
   if (!filePath) {
@@ -130,7 +131,11 @@ async function main() {
   console.log("  3. Use search_tweets and find_related tools");
 }
 
-main().catch((error) => {
-  console.error("Fatal error:", error);
-  process.exit(1);
-});
+const isDirectExecution = process.argv[1] === fileURLToPath(import.meta.url);
+
+if (isDirectExecution) {
+  main().catch((error) => {
+    console.error("Fatal error:", error);
+    process.exit(1);
+  });
+}
