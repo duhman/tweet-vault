@@ -20,6 +20,8 @@ const corsHeaders = {
 };
 
 const SCHEMA = Deno.env.get("SUPABASE_SCHEMA") || "tweet_vault";
+const EMBEDDING_DIMENSIONS = 1536;
+const GEMINI_EMBEDDING_MODEL = "gemini-embedding-001";
 
 interface ProcessResult {
   tweets_embedded: number;
@@ -52,8 +54,40 @@ async function withRetry<T>(fn: () => Promise<T>, retries = 3): Promise<T> {
 
 async function generateEmbedding(
   text: string,
-  openaiKey: string,
+  openaiKey: string | null,
+  geminiKey: string | null,
 ): Promise<number[]> {
+  const input = clampEmbeddingInput(text, DEFAULT_MAX_INPUT_CHARS);
+  if (geminiKey) {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_EMBEDDING_MODEL}:embedContent?key=${geminiKey}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          content: { parts: [{ text: input }] },
+          outputDimensionality: EMBEDDING_DIMENSIONS,
+        }),
+      },
+    );
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Gemini embedding API error: ${error}`);
+    }
+
+    const data = await response.json();
+    const embedding = data.embedding?.values ?? [];
+    if (embedding.length !== EMBEDDING_DIMENSIONS) {
+      throw new Error(`Unexpected embedding dim ${embedding.length}`);
+    }
+    return embedding;
+  }
+
+  if (!openaiKey) {
+    throw new Error("OPENAI_API_KEY or GOOGLE_API_KEY/GEMINI_API_KEY must be configured");
+  }
+
   const response = await fetch("https://api.openai.com/v1/embeddings", {
     method: "POST",
     headers: {
@@ -62,7 +96,7 @@ async function generateEmbedding(
     },
     body: JSON.stringify({
       model: EMBEDDING_MODEL,
-      input: clampEmbeddingInput(text, DEFAULT_MAX_INPUT_CHARS),
+      input,
     }),
   });
 
@@ -91,13 +125,14 @@ Deno.serve(async (req) => {
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-    const openaiKey = Deno.env.get("OPENAI_API_KEY")!;
+    const openaiKey = Deno.env.get("OPENAI_API_KEY") || null;
+    const geminiKey = Deno.env.get("GOOGLE_API_KEY") || Deno.env.get("GEMINI_API_KEY") || null;
 
-    if (!supabaseUrl || !supabaseKey || !openaiKey) {
+    if (!supabaseUrl || !supabaseKey || (!openaiKey && !geminiKey)) {
       return new Response(
         JSON.stringify({
           error:
-            "SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, and OPENAI_API_KEY must all be configured",
+            "SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, and either OPENAI_API_KEY or GOOGLE_API_KEY/GEMINI_API_KEY must all be configured",
         }),
         {
           status: 500,
@@ -129,7 +164,7 @@ Deno.serve(async (req) => {
       for (const tweet of tweetsToEmbed ?? []) {
         try {
           const text = createTweetEmbeddingText(tweet);
-          const embedding = await withRetry(() => generateEmbedding(text, openaiKey));
+          const embedding = await withRetry(() => generateEmbedding(text, openaiKey, geminiKey));
 
           const { error: updateError } = await supabase
             .from("tweets")
@@ -213,7 +248,7 @@ Deno.serve(async (req) => {
       for (const link of (linkEmbeddingCandidates ?? []).filter(isLinkReadyForEmbedding).slice(0, 10)) {
         try {
           const text = createLinkEmbeddingText(link);
-          const embedding = await withRetry(() => generateEmbedding(text, openaiKey));
+          const embedding = await withRetry(() => generateEmbedding(text, openaiKey, geminiKey));
 
           const { error: updateError } = await supabase
             .from("links")

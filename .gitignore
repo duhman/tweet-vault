@@ -36,3 +36,6 @@ bun.lockb
 
 # Data exports (may contain personal data)
 bookmarks*.json
+
+# Local Claude Code working state
+.claude/worktrees/
