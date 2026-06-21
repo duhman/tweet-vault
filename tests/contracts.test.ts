@@ -2,10 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "fs";
 import { spawnSync } from "child_process";
-import { join } from "path";
+import { dirname, join } from "path";
+import { fileURLToPath } from "url";
 import { validateEnvironment } from "../mcp-server/index.js";
 
-const cwd = "/Users/minimac/projects/tweet-vault";
+const cwd = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 test("package scripts point at the compiled entrypoint", () => {
   const pkg = JSON.parse(readFileSync(join(cwd, "package.json"), "utf8"));

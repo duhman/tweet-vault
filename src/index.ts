@@ -8,8 +8,9 @@ import {
 import { processAllEmbeddings } from "./process/embeddings.js";
 import { getStats, recordSync, upsertTweetInteractions } from "./utils/supabase.js";
 
-// Load environment variables
-config();
+// Load environment variables (override: true ensures project .env wins
+// over stale shell exports like SUPABASE_SCHEMA=star_vault)
+config({ override: true });
 
 async function importFromFile(filePath: string): Promise<void> {
   if (!existsSync(filePath)) {

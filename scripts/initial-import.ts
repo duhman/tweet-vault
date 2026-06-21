@@ -16,7 +16,8 @@ import { processAllEmbeddings } from "../src/process/embeddings.js";
 import { recordSync, upsertTweetInteractions } from "../src/utils/supabase.js";
 import { fileURLToPath } from "url";
 
-config();
+// override: true ensures project .env wins over stale shell exports
+config({ override: true });
 
 export async function main() {
   const filePath = process.argv[2];

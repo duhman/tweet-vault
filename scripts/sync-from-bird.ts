@@ -27,7 +27,8 @@ import {
 } from "../src/utils/supabase.js";
 import { fileURLToPath } from "url";
 
-config();
+// override: true ensures project .env wins over stale shell exports
+config({ override: true });
 
 interface CliOptions {
   fetchAll: boolean;
@@ -81,9 +82,56 @@ export function parseOptions(args: string[]): CliOptions {
   };
 }
 
+async function tryKeychain(): Promise<{ authToken: string; ct0: string } | null> {
+  // Pull X/Twitter session cookies from macOS Keychain. These are the same
+  // cookies that the /Users/workboi/bin/bird wrapper uses; storing them only
+  // in Keychain (not in .env) keeps the secrets out of the dotfiles repo,
+  // the redaction layer, and the cron secret scanner.
+  //
+  // Keychain service names follow the bird wrapper convention:
+  //   last30days-AUTH_TOKEN
+  //   last30days-CT0
+  const user = process.env.USER || process.env.LOGNAME || "";
+  if (!user || process.platform !== "darwin") return null;
+
+  const { execFile } = await import("node:child_process");
+  const read = (service: string): Promise<string | null> =>
+    new Promise((resolve) => {
+      execFile(
+        "security",
+        ["find-generic-password", "-a", user, "-s", service, "-w"],
+        { timeout: 5_000, encoding: "utf8" },
+        (err, stdout) => {
+          if (err || !stdout) return resolve(null);
+          const v = stdout.trim();
+          resolve(v.length > 0 ? v : null);
+        },
+      );
+    });
+
+  const [authToken, ct0] = await Promise.all([
+    read("last30days-AUTH_TOKEN"),
+    read("last30days-CT0"),
+  ]);
+  if (authToken && ct0) return { authToken, ct0 };
+  return null;
+}
+
 async function getClient(): Promise<TwitterClient> {
-  const authToken = process.env.AUTH_TOKEN || process.env.TWITTER_AUTH_TOKEN;
-  const ct0 = process.env.CT0 || process.env.TWITTER_CT0;
+  let authToken = process.env.AUTH_TOKEN || process.env.TWITTER_AUTH_TOKEN;
+  let ct0 = process.env.CT0 || process.env.TWITTER_CT0;
+
+  if (!authToken || !ct0) {
+    const fromKeychain = await tryKeychain();
+    if (fromKeychain) {
+      authToken = fromKeychain.authToken;
+      ct0 = fromKeychain.ct0;
+      // Mirror into env so any downstream tooling (Bird CLI calls, error
+      // messages, child processes) sees the same values.
+      process.env.AUTH_TOKEN = authToken;
+      process.env.CT0 = ct0;
+    }
+  }
 
   if (authToken && ct0) {
     return new TwitterClient({

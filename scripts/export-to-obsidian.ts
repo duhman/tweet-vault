@@ -24,7 +24,8 @@ import {
 } from "@steipete/bird";
 import { fileURLToPath } from "url";
 
-config();
+// override: true ensures project .env wins over stale shell exports
+config({ override: true });
 
 type InteractionType = "bookmark" | "like";
 

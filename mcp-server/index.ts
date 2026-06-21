@@ -17,7 +17,9 @@ import OpenAI from "openai";
 import { fileURLToPath } from "url";
 import { formatMissingEnvMessage, getMissingEnvVars } from "../shared/runtime.js";
 
-config();
+// override: true ensures project .env wins over stale shell exports
+// (e.g. SUPABASE_SCHEMA=star_vault leaking from another project session)
+config({ override: true });
 
 const REQUIRED_ENV_VARS = [
   "SUPABASE_URL",
