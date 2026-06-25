@@ -54,11 +54,13 @@ export function parseOptions(args: string[]): CliOptions {
   const outputArg = args.find((arg) => arg.startsWith("--output="));
 
   const count = countArg ? parseInt(countArg.split("=")[1], 10) : 50;
-  const maxPages = maxPagesArg ? parseInt(maxPagesArg.split("=")[1], 10) : undefined;
+  const maxPages = maxPagesArg
+    ? parseInt(maxPagesArg.split("=")[1], 10)
+    : undefined;
   const cursor = cursorArg ? cursorArg.split("=")[1] : undefined;
   const output = outputArg
     ? outputArg.split("=")[1]
-    : "/Users/minimac/projects/obsidian-memory/00-Inbox/feeds/twitter";
+    : "/Users/workboi/projects/obsidian-memory/00-Inbox/feeds/twitter";
 
   return {
     fetchAll,
@@ -90,7 +92,11 @@ async function fetchTimeline(
   client: TwitterClient,
   kind: InteractionType,
   options: CliOptions,
-): Promise<{ kind: InteractionType; tweets: TweetData[]; nextCursor?: string }> {
+): Promise<{
+  kind: InteractionType;
+  tweets: TweetData[];
+  nextCursor?: string;
+}> {
   const timelineClient = client as any;
   let result: SearchResult;
 
@@ -142,7 +148,10 @@ function noteBody(kind: InteractionType, tweet: TweetData): string {
   const content = markdownEscape(tweet.text || "");
   const preview = content.length > 900 ? `${content.slice(0, 900)}…` : content;
   const url = buildUrl(tweet);
-  const tags = kind === "bookmark" ? "[twitter, bookmark, resource]" : "[twitter, like, resource]";
+  const tags =
+    kind === "bookmark"
+      ? "[twitter, bookmark, resource]"
+      : "[twitter, like, resource]";
 
   return `---
 source: twitter-${kind}
@@ -176,7 +185,11 @@ ${url}
 `;
 }
 
-function writeNotes(outputDir: string, kind: InteractionType, tweets: TweetData[]): number {
+function writeNotes(
+  outputDir: string,
+  kind: InteractionType,
+  tweets: TweetData[],
+): number {
   mkdirSync(outputDir, { recursive: true });
   let written = 0;
   for (const tweet of tweets) {
@@ -212,7 +225,9 @@ export async function main() {
     const bookmarks = await fetchTimeline(client, "bookmark", options);
     const written = writeNotes(options.output, "bookmark", bookmarks.tweets);
     totalWritten += written;
-    console.log(`  ✅ Fetched ${bookmarks.tweets.length} bookmarks, wrote ${written} new notes`);
+    console.log(
+      `  ✅ Fetched ${bookmarks.tweets.length} bookmarks, wrote ${written} new notes`,
+    );
   }
 
   if (includeLikes) {
@@ -220,7 +235,9 @@ export async function main() {
     const likes = await fetchTimeline(client, "like", options);
     const written = writeNotes(options.output, "like", likes.tweets);
     totalWritten += written;
-    console.log(`  ✅ Fetched ${likes.tweets.length} likes, wrote ${written} new notes`);
+    console.log(
+      `  ✅ Fetched ${likes.tweets.length} likes, wrote ${written} new notes`,
+    );
   }
 
   console.log(`\n🎉 Export complete. New notes written: ${totalWritten}`);

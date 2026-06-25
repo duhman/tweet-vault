@@ -163,7 +163,7 @@ bun run export:obsidian -- --bookmarks-only --count=20
 Default output:
 
 ```text
-/Users/minimac/projects/obsidian-memory/00-Inbox/feeds/twitter
+/Users/workboi/projects/obsidian-memory/00-Inbox/feeds/twitter
 ```
 
 This uses the same Safari-authenticated Bird flow as normal sync, but writes deterministic markdown inbox notes instead of upserting into Supabase.

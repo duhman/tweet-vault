@@ -9,7 +9,7 @@ This project now uses a unified canonical model:
 ## 1. Apply migrations
 
 ```bash
-cd /Users/bigmac/projects/personal/tweet-vault
+cd /Users/workboi/projects/tweet-vault
 supabase db push --linked
 ```
 

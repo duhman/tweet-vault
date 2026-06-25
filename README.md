@@ -139,16 +139,33 @@ Add to your Claude MCP configuration (`~/.claude.json` or Claude Desktop setting
 
 ### Available MCP Tools
 
-| Tool                   | Description                               |
-| ---------------------- | ----------------------------------------- |
+| Tool                   | Description                                           |
+| ---------------------- | ----------------------------------------------------- |
 | `search_tweets`        | Semantic search over saved tweets (bookmarks + likes) |
-| `search_likes`         | Semantic search over liked tweets only    |
-| `search_links`         | Semantic search over extracted links      |
-| `get_tweet`            | Get specific tweet by ID                  |
-| `list_links_by_domain` | Browse links by domain (e.g., github.com) |
-| `find_related`         | Find tweets and links for a topic         |
-| `vault_stats`          | Show vault statistics                     |
-| `list_authors`         | List tweets from specific author          |
+| `search_likes`         | Semantic search over liked tweets only                |
+| `search_links`         | Semantic search over extracted links                  |
+| `get_tweet`            | Get specific tweet by ID                              |
+| `list_links_by_domain` | Browse links by domain (e.g., github.com)             |
+| `find_related`         | Find tweets and links for a topic                     |
+| `vault_stats`          | Show vault statistics                                 |
+| `list_authors`         | List tweets from specific author                      |
+
+### Codex / Bookmark Enrichment
+
+For Codex, the canonical MCP entry is managed from
+`/Users/workboi/agents/mcp/servers/tweet-vault/server.yaml` and launches with:
+
+```toml
+[mcp_servers.tweet-vault]
+command = "bun"
+args = ["run", "--cwd", "/Users/workboi/projects/tweet-vault", "mcp"]
+env = { "SUPABASE_SCHEMA" = "tweet_vault" }
+```
+
+The `--cwd` is intentional: it lets the MCP server load this project's `.env`
+without copying secrets into Codex config. During bookmark ingestion, use
+`get_tweet` for exact X/Twitter URLs and `find_related` / `search_links` for
+nearby saved context before falling back to public oEmbed extraction.
 
 ### Example Queries
 
@@ -162,17 +179,17 @@ Once configured, ask Claude things like:
 
 ## Commands
 
-| Command                 | Description                              |
-| ----------------------- | ---------------------------------------- |
-| `bun run sync`          | Sync bookmarks + likes from Twitter via Bird |
-| `bun run sync:all`      | Sync all available pages (bookmarks + likes) |
+| Command                                                  | Description                                       |
+| -------------------------------------------------------- | ------------------------------------------------- |
+| `bun run sync`                                           | Sync bookmarks + likes from Twitter via Bird      |
+| `bun run sync:all`                                       | Sync all available pages (bookmarks + likes)      |
 | `bun run export:obsidian -- --bookmarks-only --count=20` | Export recent tweets directly into Obsidian inbox |
-| `bun run import <file>` | Import tweets from JSON export           |
-| `bun run mcp`           | Run MCP server standalone                |
-| `bun run smoke:mcp`     | Validate MCP startup and env wiring      |
-| `bun run typecheck`     | TypeScript type checking                 |
-| `bun run test`          | Run regression tests                     |
-| `bun run verify`        | Run typecheck, build, and tests          |
+| `bun run import <file>`                                  | Import tweets from JSON export                    |
+| `bun run mcp`                                            | Run MCP server standalone                         |
+| `bun run smoke:mcp`                                      | Validate MCP startup and env wiring               |
+| `bun run typecheck`                                      | TypeScript type checking                          |
+| `bun run test`                                           | Run regression tests                              |
+| `bun run verify`                                         | Run typecheck, build, and tests                   |
 
 ## Environment Variables
 
@@ -195,12 +212,12 @@ Once configured, ask Claude things like:
 
 ### Tables (tweet_vault schema)
 
-| Table        | Purpose                                        |
-| ------------ | ---------------------------------------------- |
-| `tweets`     | Canonical saved tweets with metadata and embeddings |
-| `tweet_interactions` | Per-tweet interactions (`bookmark` / `like`) |
-| `links`      | Extracted URLs with og:tags and embeddings     |
-| `sync_state` | Sync history and statistics                    |
+| Table                | Purpose                                             |
+| -------------------- | --------------------------------------------------- |
+| `tweets`             | Canonical saved tweets with metadata and embeddings |
+| `tweet_interactions` | Per-tweet interactions (`bookmark` / `like`)        |
+| `links`              | Extracted URLs with og:tags and embeddings          |
+| `sync_state`         | Sync history and statistics                         |
 
 ### RPC Functions
 
@@ -237,7 +254,7 @@ curl -X POST "https://your-project.supabase.co/functions/v1/process-tweets" \
 
 ## Verification
 
-See [docs/VERIFICATION.md](/Users/minimac/projects/tweet-vault/docs/VERIFICATION.md) for the full checklist. The short version is:
+See [docs/VERIFICATION.md](docs/VERIFICATION.md) for the full checklist. The short version is:
 
 ```bash
 bun run typecheck
