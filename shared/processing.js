@@ -1,6 +1,11 @@
+export const EMBEDDING_PROVIDER_OPENAI = "openai";
+export const EMBEDDING_PROVIDER_GEMINI = "gemini";
 export const EMBEDDING_MODEL = "text-embedding-3-small";
+export const GEMINI_EMBEDDING_MODEL = "gemini-embedding-001";
+export const EMBEDDING_DIMENSIONS = 1536;
 export const DEFAULT_MAX_INPUT_CHARS = 8000;
 export const DEFAULT_METADATA_RETRY_COOLDOWN_HOURS = 24;
+export const DEFAULT_EMBEDDING_RETRIES = 4;
 export const SKIP_LINK_DOMAINS = new Set([
   "t.co",
   "pic.twitter.com",
@@ -160,6 +165,24 @@ export async function fetchLinkMetadataWithStrategy(fetchFn, url, options = {}) 
 export function clampEmbeddingInput(text, maxInputChars = DEFAULT_MAX_INPUT_CHARS) {
   if (text.length <= maxInputChars) return text;
   return text.slice(0, maxInputChars);
+}
+
+export function getEmbeddingProviderMetadata(provider = EMBEDDING_PROVIDER_OPENAI) {
+  const normalizedProvider =
+    provider === EMBEDDING_PROVIDER_GEMINI
+      ? EMBEDDING_PROVIDER_GEMINI
+      : EMBEDDING_PROVIDER_OPENAI;
+
+  return {
+    provider: normalizedProvider,
+    model:
+      normalizedProvider === EMBEDDING_PROVIDER_GEMINI
+        ? GEMINI_EMBEDDING_MODEL
+        : EMBEDDING_MODEL,
+    dimensions: EMBEDDING_DIMENSIONS,
+    max_input_chars: DEFAULT_MAX_INPUT_CHARS,
+    retries: DEFAULT_EMBEDDING_RETRIES,
+  };
 }
 
 export function createTweetEmbeddingText(tweet) {

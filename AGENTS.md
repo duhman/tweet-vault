@@ -21,6 +21,7 @@ bun run typecheck
 bun run test
 bun run smoke:mcp
 bun run verify
+bun run health
 
 # Run MCP server locally
 bun run mcp
@@ -35,10 +36,11 @@ bun run sync --likes-only --all --max-pages=10
 bun run import path/to/bookmarks.json
 
 # Deploy Edge Function
+supabase functions deploy tweet-vault-sync --project-ref brawengrbiuvnmsyqhoe
 supabase functions deploy process-tweets --project-ref brawengrbiuvnmsyqhoe
 ```
 
-Apply `supabase/migrations/0014_fix_process_tweets_cron.sql` on existing environments that still schedule the legacy tweet-vault endpoint name.
+Cron schedules contain project-specific function URLs and invocation headers. Apply schedules from `supabase/templates/tweet-vault-cron.sql` with private deployment credentials; never commit rendered JWTs.
 
 ## Architecture
 
@@ -49,10 +51,10 @@ Apply `supabase/migrations/0014_fix_process_tweets_cron.sql` on existing environ
 │  Data Ingestion (CLI)                                            │
 │  bun run sync ─► Bird CLI ─► Twitter GraphQL ─► Supabase        │
 │                                                                  │
-│  Processing (Edge Function - daily 6 AM UTC via pg_cron)        │
-│  ├─ Generate tweet embeddings (batch 20)                        │
-│  ├─ Fetch link metadata (batch 10)                              │
-│  └─ Generate link embeddings (batch 10)                         │
+│  Processing                                                     │
+│  ├─ tweet-vault-sync: scheduled acquisition from X/Twitter      │
+│  ├─ process-tweets: metadata + embedding backlog processor      │
+│  └─ bun run process:backlog: local manual backlog drain         │
 │                                                                  │
 │  Supabase Database (tweet_vault schema)                         │
 │  ├─ tweets (canonical tweet storage + embeddings)               │
@@ -61,17 +63,17 @@ Apply `supabase/migrations/0014_fix_process_tweets_cron.sql` on existing environ
 │  └─ sync_state (checkpoint tracking)                            │
 │                                                                  │
 │  MCP Server                                                      │
-│  └─ 8 tools: search_tweets, search_likes, search_links, etc.    │
+│  └─ 9 tools: search_tweets, search_likes, vault_health, etc.    │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-**Daily Processing**: Supabase pg_cron at 6 AM UTC triggers Edge Function `process-tweets`.
+**Daily Processing**: Supabase pg_cron acquisition uses `tweet-vault-sync`; backlog enrichment uses `process-tweets` or `bun run process:backlog`.
 
 ## Key Files
 
 | Path                                 | Purpose                            |
 | ------------------------------------ | ---------------------------------- |
-| `mcp-server/index.ts`                | MCP server (8 tools for Codex)     |
+| `mcp-server/index.ts`                | MCP server (9 tools for Codex)     |
 | `scripts/sync-from-bird.ts`          | Canonical sync for bookmarks + likes |
 | `src/process/*.ts`                   | Processing helpers (tweets, links) |
 | `src/utils/supabase.ts`              | Supabase client utilities          |
@@ -89,6 +91,7 @@ Apply `supabase/migrations/0014_fix_process_tweets_cron.sql` on existing environ
 | `list_links_by_domain` | Browse links by domain                 |
 | `find_related`         | Find tweets and links for a topic      |
 | `vault_stats`          | Vault statistics                       |
+| `vault_health`         | Backlog, cron, and sync health         |
 | `list_authors`         | List tweets from specific author       |
 
 ## Environment Variables
@@ -103,7 +106,8 @@ Apply `supabase/migrations/0014_fix_process_tweets_cron.sql` on existing environ
 
 ### Supabase Edge Function (Dashboard → Edge Functions → Secrets)
 
-- `OPENAI_API_KEY` - For embedding generation in daily cron
+- `OPENAI_API_KEY` - For embedding generation
+- `GOOGLE_API_KEY` / `GEMINI_API_KEY` - Optional Gemini fallback for Edge Function embeddings
 
 ### MCP Server (configured in MCP client configs)
 

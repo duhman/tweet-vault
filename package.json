@@ -13,6 +13,8 @@
     "sync:all": "bun run scripts/sync-from-bird.ts --all",
     "export:obsidian": "bun run scripts/export-to-obsidian.ts",
     "process": "bun run src/index.ts process",
+    "process:backlog": "bun run src/index.ts process --max-rounds=50 --batch-size=100 --embed-batch-size=20",
+    "health": "bun run src/index.ts health",
     "mcp": "bun run mcp-server/index.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test ./tests/*.test.ts",

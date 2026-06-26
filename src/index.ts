@@ -6,7 +6,9 @@ import {
   fetchAllLinkMetadata,
 } from "./process/links.js";
 import { processAllEmbeddings } from "./process/embeddings.js";
+import { formatVaultHealth, getVaultHealth } from "./utils/health.js";
 import { getStats, recordSync, upsertTweetInteractions } from "./utils/supabase.js";
+import { getEmbeddingProviderMetadata } from "../shared/processing.js";
 
 // Load environment variables (override: true ensures project .env wins
 // over stale shell exports like SUPABASE_SCHEMA=star_vault)
@@ -81,10 +83,25 @@ async function importFromFile(filePath: string): Promise<void> {
       embeddingResult.tweets.processed + embeddingResult.links.processed,
     sync_type: "manual",
     metadata: {
+      function_name: "manual-import",
+      schema: process.env.SUPABASE_SCHEMA || "tweet_vault",
+      embedding: getEmbeddingProviderMetadata("openai"),
+      provider: "openai",
+      fetched_count: data.length,
       source_file: filePath,
       imported_items: data.length,
       metadata_processed: metadataResult.processed,
       metadata_failed: metadataResult.failed,
+      tweets_embedded: embeddingResult.tweets.processed,
+      links_embedded: embeddingResult.links.processed,
+      links_metadata_fetched: metadataResult.processed,
+      links_processed: linkResult.inserted,
+      embeddings_generated:
+        embeddingResult.tweets.processed + embeddingResult.links.processed,
+      errors_count:
+        metadataResult.failed +
+        embeddingResult.tweets.failed +
+        embeddingResult.links.failed,
       tweet_embedding_failures: embeddingResult.tweets.failed,
       link_embedding_failures: embeddingResult.links.failed,
     },
@@ -127,6 +144,13 @@ async function showStats(): Promise<void> {
   }
 }
 
+function readNumberOption(args: string[], name: string): number | undefined {
+  const value = args.find((arg) => arg.startsWith(`--${name}=`))?.split("=")[1];
+  if (!value) return undefined;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 async function processCommand(command: string, args: string[]): Promise<void> {
   switch (command) {
     case "import":
@@ -139,7 +163,12 @@ async function processCommand(command: string, args: string[]): Promise<void> {
 
     case "process":
       console.log("Processing pending embeddings...");
-      const result = await processAllEmbeddings(3);
+      const result = await processAllEmbeddings({
+        concurrency: readNumberOption(args, "concurrency") ?? 3,
+        maxRounds: readNumberOption(args, "max-rounds") ?? 10,
+        batchSize: readNumberOption(args, "batch-size"),
+        embedBatchSize: readNumberOption(args, "embed-batch-size"),
+      });
       console.log(
         `Embedded ${result.tweets.processed} tweets, ${result.links.processed} links`,
       );
@@ -157,6 +186,14 @@ async function processCommand(command: string, args: string[]): Promise<void> {
       await showStats();
       break;
 
+    case "health": {
+      const health = await getVaultHealth({
+        includeCron: !args.includes("--skip-cron"),
+      });
+      console.log(formatVaultHealth(health));
+      break;
+    }
+
     case "help":
     default:
       console.log(`
@@ -165,8 +202,11 @@ Tweet Vault - Twitter Bookmarks Intelligence System
 Commands:
   import <file.json>  Import tweets from JSON export
   process             Generate embeddings for pending tweets/links
+  process --max-rounds=50
+                      Drain more of the local embedding backlog
   fetch-links         Fetch metadata for unfetched links
   stats               Show vault statistics
+  health              Show read-only processing, cron, and backlog health
   help                Show this help message
 
 Environment Variables:

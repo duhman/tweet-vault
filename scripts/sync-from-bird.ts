@@ -25,6 +25,7 @@ import {
   upsertTweetInteractions,
   type InteractionType,
 } from "../src/utils/supabase.js";
+import { getEmbeddingProviderMetadata } from "../shared/processing.js";
 import { fileURLToPath } from "url";
 
 // override: true ensures project .env wins over stale shell exports
@@ -336,6 +337,11 @@ export async function main() {
       embeddingResult.tweets.processed + embeddingResult.links.processed,
     sync_type: "bird",
     metadata: {
+      function_name: "sync-from-bird",
+      schema: process.env.SUPABASE_SCHEMA || "tweet_vault",
+      embedding: getEmbeddingProviderMetadata("openai"),
+      provider: "openai",
+      fetched_count: allTweets.length,
       fetched_total: allTweets.length,
       fetched_bookmarks: bookmarks?.tweets.length ?? 0,
       fetched_likes: likes?.tweets.length ?? 0,
@@ -347,6 +353,12 @@ export async function main() {
       interactions_updated: interactionResult.updated,
       metadata_processed: metadataResult.processed,
       metadata_failed: metadataResult.failed,
+      tweets_embedded: embeddingResult.tweets.processed,
+      links_embedded: embeddingResult.links.processed,
+      errors_count:
+        metadataResult.failed +
+        embeddingResult.tweets.failed +
+        embeddingResult.links.failed,
     },
   });
 

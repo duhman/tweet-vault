@@ -21,17 +21,10 @@ GRANT ALL ON ALL TABLES IN SCHEMA tweet_vault TO postgres,
 service_role;
 GRANT ALL ON ALL SEQUENCES IN SCHEMA tweet_vault TO postgres,
 service_role;
-GRANT
-SELECT
-,
-  INSERT,
-UPDATE,
-DELETE ON ALL TABLES IN SCHEMA tweet_vault TO anon,
+REVOKE ALL ON ALL TABLES IN SCHEMA tweet_vault FROM anon,
 authenticated;
-GRANT USAGE,
-SELECT
-  ON ALL SEQUENCES IN SCHEMA tweet_vault TO anon,
-  authenticated;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA tweet_vault FROM anon,
+authenticated;
 -- Self Host
 GRANT ALL ON ALL TABLES IN SCHEMA self_host TO postgres,
 service_role;

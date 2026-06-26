@@ -8,6 +8,7 @@ import {
 import {
   EMBEDDING_MODEL,
   DEFAULT_MAX_INPUT_CHARS,
+  DEFAULT_EMBEDDING_RETRIES,
   clampEmbeddingInput,
   createTweetEmbeddingText,
   createLinkEmbeddingText,
@@ -27,8 +28,6 @@ function getOpenAIClient(): OpenAI {
   return openaiClient;
 }
 
-const DEFAULT_RETRIES = 4;
-
 interface EmbeddingOptions {
   concurrency?: number;
   batchSize?: number;
@@ -43,7 +42,7 @@ async function sleep(ms: number): Promise<void> {
 
 async function withRetry<T>(
   fn: () => Promise<T>,
-  retries = DEFAULT_RETRIES,
+  retries = DEFAULT_EMBEDDING_RETRIES,
 ): Promise<T> {
   let attempt = 0;
   let lastError: unknown;

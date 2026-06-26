@@ -143,7 +143,7 @@ function noteFilename(kind: InteractionType, tweet: TweetData): string {
   return `${kind}-${tweet.id}.md`;
 }
 
-function noteBody(kind: InteractionType, tweet: TweetData): string {
+export function noteBody(kind: InteractionType, tweet: TweetData): string {
   const capturedAt = new Date().toISOString();
   const content = markdownEscape(tweet.text || "");
   const preview = content.length > 900 ? `${content.slice(0, 900)}…` : content;
@@ -152,20 +152,38 @@ function noteBody(kind: InteractionType, tweet: TweetData): string {
     kind === "bookmark"
       ? "[twitter, bookmark, resource]"
       : "[twitter, like, resource]";
+  const noteId = `twitter-${kind}-${tweet.id}`;
 
   return `---
+id: ${noteId}
+schema_version: "1.1"
+type: bookmark
+title: "@${yamlEscape(tweet.author.username)} ${kind} ${tweet.id}"
 source: twitter-${kind}
+source_trust: external
 captured_at: ${capturedAt}
 interaction_type: ${kind}
 author: ${tweet.author.username}
 author_name: "${yamlEscape(tweet.author.name || tweet.author.username)}"
-tweet_id: ${tweet.id}
+tweet_id: "${tweet.id}"
 url: ${url}
+canonical_url: ${url}
 created_at: ${tweet.createdAt || ""}
 relevance: medium
 action: review
 tags: ${tags}
 status: inbox
+vault_enrichment:
+  provider: tweet-vault
+  canonical_model: tweets
+  tweet_lookup: get_tweet
+  related_lookup: find_related
+  captured_fields:
+    - tweet_id
+    - author
+    - content
+    - metrics
+    - canonical_url
 ---
 
 # @${tweet.author.username} — ${kind}
@@ -189,18 +207,22 @@ function writeNotes(
   outputDir: string,
   kind: InteractionType,
   tweets: TweetData[],
-): number {
+): { written: number; skippedExisting: number } {
   mkdirSync(outputDir, { recursive: true });
   let written = 0;
+  let skippedExisting = 0;
   for (const tweet of tweets) {
     const filename = noteFilename(kind, tweet);
     const path = join(outputDir, filename);
+    if (existsSync(path)) {
+      skippedExisting += 1;
+      continue;
+    }
     const body = noteBody(kind, tweet);
-    const existed = existsSync(path);
     writeFileSync(path, body, "utf8");
-    if (!existed) written += 1;
+    written += 1;
   }
-  return written;
+  return { written, skippedExisting };
 }
 
 export async function main() {
@@ -220,27 +242,40 @@ export async function main() {
   const includeLikes = !options.bookmarksOnly;
 
   let totalWritten = 0;
+  let totalSkippedExisting = 0;
   if (includeBookmarks) {
     console.log("Step 1: Fetching bookmarks...");
     const bookmarks = await fetchTimeline(client, "bookmark", options);
-    const written = writeNotes(options.output, "bookmark", bookmarks.tweets);
+    const { written, skippedExisting } = writeNotes(
+      options.output,
+      "bookmark",
+      bookmarks.tweets,
+    );
     totalWritten += written;
+    totalSkippedExisting += skippedExisting;
     console.log(
-      `  ✅ Fetched ${bookmarks.tweets.length} bookmarks, wrote ${written} new notes`,
+      `  ✅ Fetched ${bookmarks.tweets.length} bookmarks, wrote ${written} new notes, skipped ${skippedExisting} existing`,
     );
   }
 
   if (includeLikes) {
     console.log("Step 2: Fetching likes...");
     const likes = await fetchTimeline(client, "like", options);
-    const written = writeNotes(options.output, "like", likes.tweets);
+    const { written, skippedExisting } = writeNotes(
+      options.output,
+      "like",
+      likes.tweets,
+    );
     totalWritten += written;
+    totalSkippedExisting += skippedExisting;
     console.log(
-      `  ✅ Fetched ${likes.tweets.length} likes, wrote ${written} new notes`,
+      `  ✅ Fetched ${likes.tweets.length} likes, wrote ${written} new notes, skipped ${skippedExisting} existing`,
     );
   }
 
-  console.log(`\n🎉 Export complete. New notes written: ${totalWritten}`);
+  console.log(
+    `\n🎉 Export complete. New notes written: ${totalWritten}, existing skipped: ${totalSkippedExisting}`,
+  );
 }
 
 const isDirectExecution = process.argv[1] === fileURLToPath(import.meta.url);

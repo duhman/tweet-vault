@@ -10,7 +10,7 @@ Tweet Vault makes your Twitter/X bookmarks and likes searchable with natural lan
 - 🔗 **Link Extraction** — Automatically extracts and indexes URLs with metadata
 - 🤖 **Claude MCP Integration** — Query bookmarks + likes directly from Claude
 - 🐦 **Bird CLI Integration** — Sync bookmarks and likes automatically from Twitter
-- ⏰ **Daily Processing** — Automatically processes embeddings via Supabase pg_cron
+- ⏰ **Daily Processing** — Syncs new tweets and drains enrichment backlog via Supabase pg_cron or local backlog commands
 - 🧠 **Smart Embeddings** — OpenAI text-embedding-3-small (1536 dimensions)
 - ⚡ **Fast Vector Search** — pgvector with HNSW indexes
 
@@ -21,10 +21,10 @@ Tweet Vault makes your Twitter/X bookmarks and likes searchable with natural lan
 │  Data Ingestion (CLI)                                          │
 │  bun run sync ─► Bird CLI ─► Twitter GraphQL ─► Supabase       │
 │                                                                │
-│  Processing (Edge Function - daily 6 AM UTC via pg_cron)       │
-│  ├─ Generate tweet embeddings (batch 20)                       │
-│  ├─ Fetch link metadata (batch 10)                             │
-│  └─ Generate link embeddings (batch 10)                        │
+│  Processing                                                     │
+│  ├─ tweet-vault-sync: scheduled acquisition from X/Twitter      │
+│  ├─ process-tweets: metadata + embedding backlog processor      │
+│  └─ bun run process:backlog: local manual backlog drain         │
 │                                                                │
 │  Supabase Database (tweet_vault schema)                        │
 │  ├─ tweets (canonical tweet storage, 1536d embeddings)         │
@@ -33,7 +33,7 @@ Tweet Vault makes your Twitter/X bookmarks and likes searchable with natural lan
 │  └─ sync_state (checkpoint tracking)                           │
 │                                                                │
 │  MCP Server ─► Claude                                          │
-│  └─ 8 tools: search_tweets, search_likes, search_links, etc.   │
+│  └─ 9 tools: search_tweets, vault_health, search_links, etc.    │
 └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -65,14 +65,15 @@ cp .env.example .env
 
 1. Create a Supabase project
 2. Run migrations from `supabase/migrations/` in order
-3. Deploy the Edge Function:
+3. Deploy the Edge Functions:
 
 ```bash
+supabase functions deploy tweet-vault-sync --project-ref <your-project-ref>
 supabase functions deploy process-tweets --project-ref <your-project-ref>
 supabase secrets set OPENAI_API_KEY="<your-key>" --project-ref <your-project-ref>
 ```
 
-For existing deployments that still reference the legacy cron endpoint, apply `supabase/migrations/0014_fix_process_tweets_cron.sql` so pg_cron calls `process-tweets`.
+Cron schedules contain project-specific function URLs and invocation headers. Do not commit rendered schedules; apply them from `supabase/templates/tweet-vault-cron.sql` with private deployment credentials.
 
 ### Import From Twitter
 
@@ -148,6 +149,7 @@ Add to your Claude MCP configuration (`~/.claude.json` or Claude Desktop setting
 | `list_links_by_domain` | Browse links by domain (e.g., github.com)             |
 | `find_related`         | Find tweets and links for a topic                     |
 | `vault_stats`          | Show vault statistics                                 |
+| `vault_health`         | Show backlog, recent sync, cron, and warning status   |
 | `list_authors`         | List tweets from specific author                      |
 
 ### Codex / Bookmark Enrichment
@@ -185,6 +187,8 @@ Once configured, ask Claude things like:
 | `bun run sync:all`                                       | Sync all available pages (bookmarks + likes)      |
 | `bun run export:obsidian -- --bookmarks-only --count=20` | Export recent tweets directly into Obsidian inbox |
 | `bun run import <file>`                                  | Import tweets from JSON export                    |
+| `bun run health`                                         | Show read-only backlog, sync, and cron health     |
+| `bun run process:backlog`                                | Drain more pending embeddings locally             |
 | `bun run mcp`                                            | Run MCP server standalone                         |
 | `bun run smoke:mcp`                                      | Validate MCP startup and env wiring               |
 | `bun run typecheck`                                      | TypeScript type checking                          |
@@ -207,6 +211,7 @@ Once configured, ask Claude things like:
 | Variable         | Description              |
 | ---------------- | ------------------------ |
 | `OPENAI_API_KEY` | For embedding generation |
+| `GOOGLE_API_KEY` / `GEMINI_API_KEY` | Optional Gemini embedding fallback for Edge Functions |
 
 ## Database Schema
 
@@ -235,13 +240,20 @@ Once configured, ask Claude things like:
 6. **Fetch Metadata** — GET each URL, extract og:title, og:description
 7. **Generate Embeddings** — OpenAI text-embedding-3-small (1536d)
 
-## Automated Daily Processing
+## Automated Processing
 
-The Edge Function `process-tweets` runs daily at 6 AM UTC via Supabase pg_cron:
+Tweet Vault has two processing surfaces:
 
-- Generates embeddings for tweets without them (batch of 20)
-- Fetches metadata for links without it (batch of 10)
-- Generates embeddings for links with metadata (batch of 10)
+- `tweet-vault-sync`: acquisition job that fetches new X/Twitter bookmarks.
+- `process-tweets`: enrichment job that fetches link metadata and generates pending embeddings.
+
+The safe cron template is `supabase/templates/tweet-vault-cron.sql`. It schedules acquisition first and a separate enrichment/backlog pass afterward.
+
+Local backlog drain:
+
+```bash
+bun run process:backlog
+```
 
 Manual trigger:
 
@@ -251,6 +263,10 @@ curl -X POST "https://your-project.supabase.co/functions/v1/process-tweets" \
   -H "Content-Type: application/json" \
   -d '{}'
 ```
+
+## Obsidian Brain Integration
+
+Supabase Tweet Vault is the cloud enrichment/search layer. The Obsidian bookmark vault remains the durable markdown/canon layer. `bun run export:obsidian` writes v1.1 frontmatter with `vault_enrichment` metadata so downstream bookmark validators and promotion workflows can connect notes back to Tweet Vault.
 
 ## Verification
 
@@ -262,6 +278,8 @@ bun run build
 bun run test
 bun run smoke:mcp
 ```
+
+For the current live deployment state, cron topology, and security-hardening verification, see [docs/LIVE_DEPLOYMENT.md](docs/LIVE_DEPLOYMENT.md).
 
 ## Tech Stack
 

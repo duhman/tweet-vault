@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { parseOptions as parseSyncOptions } from "../scripts/sync-from-bird.js";
-import { parseOptions as parseExportOptions } from "../scripts/export-to-obsidian.js";
+import {
+  noteBody,
+  parseOptions as parseExportOptions,
+} from "../scripts/export-to-obsidian.js";
 
 test("parses sync flags and defaults", () => {
   const options = parseSyncOptions([
@@ -41,4 +44,24 @@ test("defaults Obsidian export to the workboi brain inbox", () => {
     options.output,
     "/Users/workboi/projects/obsidian-memory/00-Inbox/feeds/twitter",
   );
+});
+
+test("Obsidian export emits v1.1 enrichment frontmatter", () => {
+  const body = noteBody("bookmark", {
+    id: "123",
+    text: "Useful source",
+    author: { username: "alice", name: "Alice" },
+    createdAt: "2026-06-26T06:00:00.000Z",
+    likeCount: 1,
+    retweetCount: 2,
+    replyCount: 3,
+  } as any);
+
+  assert.match(body, /schema_version: "1\.1"/);
+  assert.match(body, /source_trust: external/);
+  assert.match(body, /tweet_id: "123"/);
+  assert.match(body, /canonical_url: https:\/\/x\.com\/alice\/status\/123/);
+  assert.match(body, /vault_enrichment:/);
+  assert.match(body, /tweet_lookup: get_tweet/);
+  assert.match(body, /related_lookup: find_related/);
 });

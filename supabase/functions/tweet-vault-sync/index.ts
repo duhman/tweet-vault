@@ -13,16 +13,22 @@
  */
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.4";
+import {
+  EMBEDDING_DIMENSIONS,
+  EMBEDDING_MODEL as OPENAI_EMBEDDING_MODEL,
+  EMBEDDING_PROVIDER_GEMINI,
+  EMBEDDING_PROVIDER_OPENAI,
+  GEMINI_EMBEDDING_MODEL,
+  clampEmbeddingInput,
+  createTweetEmbeddingText,
+  getEmbeddingProviderMetadata,
+} from "../../../shared/processing.js";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
     "authorization, x-client-info, apikey, content-type",
 };
-
-const EMBEDDING_DIMENSIONS = 1536;
-const OPENAI_EMBEDDING_MODEL = "text-embedding-3-small";
-const GEMINI_EMBEDDING_MODEL = "gemini-embedding-001";
 
 interface TweetData {
   rest_id: string;
@@ -58,6 +64,7 @@ interface SyncResult {
   tweets_added: number;
   links_extracted: number;
   embeddings_generated: number;
+  embedding_provider: string;
   errors: string[];
 }
 
@@ -224,6 +231,7 @@ async function generateEmbedding(
   openaiKey: string | null,
   geminiKey: string | null,
 ): Promise<number[]> {
+  const input = clampEmbeddingInput(text);
   if (geminiKey) {
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_EMBEDDING_MODEL}:embedContent?key=${geminiKey}`,
@@ -231,7 +239,7 @@ async function generateEmbedding(
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          content: { parts: [{ text }] },
+          content: { parts: [{ text: input }] },
           outputDimensionality: EMBEDDING_DIMENSIONS,
         }),
       },
@@ -262,7 +270,7 @@ async function generateEmbedding(
     },
     body: JSON.stringify({
       model: OPENAI_EMBEDDING_MODEL,
-      input: text,
+      input,
     }),
   });
 
@@ -303,6 +311,10 @@ Deno.serve(async (req) => {
     const ct0 = Deno.env.get("TWITTER_CT0");
     const openaiKey = Deno.env.get("OPENAI_API_KEY") || null;
     const geminiKey = Deno.env.get("GOOGLE_API_KEY") || Deno.env.get("GEMINI_API_KEY") || null;
+    const embeddingProvider = geminiKey
+      ? EMBEDDING_PROVIDER_GEMINI
+      : EMBEDDING_PROVIDER_OPENAI;
+    const embeddingMetadata = getEmbeddingProviderMetadata(embeddingProvider);
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
     const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
@@ -335,6 +347,7 @@ Deno.serve(async (req) => {
       tweets_added: 0,
       links_extracted: 0,
       embeddings_generated: 0,
+      embedding_provider: embeddingProvider,
       errors: [],
     };
 
@@ -400,16 +413,7 @@ Deno.serve(async (req) => {
 
       for (const tweet of tweetsNeedingEmbeddings ?? []) {
         try {
-          const parts = [tweet.content];
-          if (tweet.author_name) {
-            parts.push(
-              `Author: ${tweet.author_name} (@${tweet.author_username})`,
-            );
-          } else {
-            parts.push(`Author: @${tweet.author_username}`);
-          }
-
-          const text = parts.join("\n");
+          const text = createTweetEmbeddingText(tweet);
           const embedding = await generateEmbedding(text, openaiKey, geminiKey);
 
           await supabase
@@ -433,7 +437,21 @@ Deno.serve(async (req) => {
       links_processed: result.links_extracted,
       embeddings_generated: result.embeddings_generated,
       sync_type: options.syncType,
-      metadata: { fetched: result.tweets_fetched, errors: result.errors },
+      metadata: {
+        function_name: "tweet-vault-sync",
+        schema: "tweet_vault",
+        embedding: embeddingMetadata,
+        provider: embeddingProvider,
+        fetched_count: result.tweets_fetched,
+        tweets_added: result.tweets_added,
+        tweets_embedded: result.embeddings_generated,
+        links_metadata_fetched: 0,
+        links_embedded: 0,
+        links_processed: result.links_extracted,
+        embeddings_generated: result.embeddings_generated,
+        errors_count: result.errors.length,
+        errors: result.errors.slice(0, 20),
+      },
     });
 
     console.log("Sync complete:", result);

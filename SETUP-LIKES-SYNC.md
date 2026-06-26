@@ -22,11 +22,12 @@ supabase db push --project-ref <project-ref>
 ## 2. Deploy processing functions
 
 ```bash
+supabase functions deploy tweet-vault-sync --project-ref <project-ref>
 supabase functions deploy process-tweets --project-ref <project-ref>
 supabase functions deploy sync-likes --project-ref <project-ref>
 ```
 
-`sync-likes` is now a thin compatibility endpoint writing into canonical tables.
+`tweet-vault-sync` is the scheduled acquisition function. `process-tweets` drains metadata and embedding backlog. `sync-likes` is a legacy compatibility endpoint writing into canonical tables; prefer `bun run sync --likes-only` for normal local operation.
 
 ## 3. Run sync locally
 
@@ -58,6 +59,7 @@ Use MCP tools after sync:
 - `search_tweets` with `interaction_type: "like"`
 - `search_likes`
 - `vault_stats`
+- `vault_health`
 
 ## Troubleshooting
 
@@ -69,3 +71,6 @@ Use MCP tools after sync:
 
 - Metadata retries seem stalled:
   Failed link metadata now uses cooldown logic (24h); clear `fetch_error` on specific rows to force immediate retry.
+
+- Backlog health is unclear:
+  Run `bun run health` for pending embeddings, missing metadata, recent syncs, and cron status.

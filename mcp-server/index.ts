@@ -15,7 +15,9 @@ import { config } from "dotenv";
 import { createClient } from "@supabase/supabase-js";
 import OpenAI from "openai";
 import { fileURLToPath } from "url";
+import { z } from "zod";
 import { formatMissingEnvMessage, getMissingEnvVars } from "../shared/runtime.js";
+import { formatVaultHealth, getVaultHealth } from "../src/utils/health.js";
 
 // override: true ensures project .env wins over stale shell exports
 // (e.g. SUPABASE_SCHEMA=star_vault leaking from another project session)
@@ -31,6 +33,11 @@ type AppContext = {
   schema: string;
   supabase: any;
   openai: OpenAI;
+};
+
+type ToolResponse = {
+  text: string;
+  structured?: Record<string, unknown>;
 };
 
 let appContext: AppContext | null = null;
@@ -96,6 +103,51 @@ function normalizeThreshold(threshold: number | undefined, defaultValue = 0.5): 
 
 function normalizeUsername(username: string): string {
   return username.replace(/^@+/, "").trim();
+}
+
+function textResponse(text: string): ToolResponse {
+  return { text };
+}
+
+const SearchTweetsArgsSchema = z.object({
+  query: z.string().trim().min(1, "query must not be empty"),
+  limit: z.number().optional(),
+  threshold: z.number().optional(),
+  interaction_type: z.enum(["all", "bookmark", "like"]).optional(),
+});
+
+const SearchLinksArgsSchema = z.object({
+  query: z.string().trim().min(1, "query must not be empty"),
+  limit: z.number().optional(),
+  threshold: z.number().optional(),
+});
+
+const GetTweetArgsSchema = z.object({
+  tweet_id: z.string().trim().min(1, "tweet_id must not be empty"),
+});
+
+const DomainArgsSchema = z.object({
+  domain: z.string().trim().min(1, "domain must not be empty"),
+  limit: z.number().optional(),
+});
+
+const TopicArgsSchema = z.object({
+  topic: z.string().trim().min(1, "topic must not be empty"),
+  limit: z.number().optional(),
+});
+
+const UsernameArgsSchema = z.object({
+  username: z.string().trim().min(1, "username must not be empty"),
+  limit: z.number().optional(),
+});
+
+const NoArgsSchema = z.object({}).passthrough();
+
+function parseToolArgs<T extends z.ZodTypeAny>(
+  schema: T,
+  args: unknown,
+): z.infer<T> {
+  return schema.parse(args ?? {});
 }
 
 export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): string[] {
@@ -362,6 +414,15 @@ const tools: Tool[] = [
     },
   },
   {
+    name: "vault_health",
+    description:
+      "Read-only operational health check: pending embeddings/metadata, recent syncs, cron status, and warnings.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+    },
+  },
+  {
     name: "list_authors",
     description: "List saved tweets from a specific Twitter author.",
     inputSchema: {
@@ -387,24 +448,35 @@ async function handleSearchTweets(
   limit = 10,
   threshold = 0.5,
   interactionType: InteractionFilter = "all",
-): Promise<string> {
+): Promise<ToolResponse> {
   if (!query.trim()) {
-    return "Please provide a non-empty search query.";
+    return textResponse("Please provide a non-empty search query.");
   }
 
   const embedding = await getEmbedding(query);
+  const normalizedLimit = normalizeLimit(limit, 10);
+  const normalizedThreshold = normalizeThreshold(threshold);
   const results = await searchTweetsRpc(
     embedding,
-    normalizeThreshold(threshold),
-    normalizeLimit(limit, 10),
+    normalizedThreshold,
+    normalizedLimit,
     interactionType,
   );
 
   if (results.length === 0) {
-    return "No matching tweets found. Try a broader query or lower threshold.";
+    return {
+      text: "No matching tweets found. Try a broader query or lower threshold.",
+      structured: {
+        query,
+        interaction_type: interactionType,
+        threshold: normalizedThreshold,
+        limit: normalizedLimit,
+        results: [],
+      },
+    };
   }
 
-  return results
+  const text = results
     .map((tweet, i) => {
       const interactions = tweet.interaction_types?.length
         ? tweet.interaction_types.join(", ")
@@ -416,13 +488,34 @@ async function handleSearchTweets(
    🔗 Tweet ID: ${tweet.tweet_id}`;
     })
     .join("\n\n");
+
+  return {
+    text,
+    structured: {
+      query,
+      interaction_type: interactionType,
+      threshold: normalizedThreshold,
+      limit: normalizedLimit,
+      results: results.map((tweet) => ({
+        tweet_id: tweet.tweet_id,
+        author_username: tweet.author_username,
+        author_name: tweet.author_name ?? null,
+        content: tweet.content,
+        created_at: tweet.created_at ?? null,
+        metrics: tweet.metrics ?? {},
+        similarity: tweet.similarity,
+        interaction_types: tweet.interaction_types ?? [],
+        primary_interaction: tweet.primary_interaction ?? null,
+      })),
+    },
+  };
 }
 
 async function handleSearchLikes(
   query: string,
   limit = 10,
   threshold = 0.5,
-): Promise<string> {
+): Promise<ToolResponse> {
   return handleSearchTweets(query, limit, threshold, "like");
 }
 
@@ -430,28 +523,38 @@ async function handleSearchLinks(
   query: string,
   limit = 10,
   threshold = 0.5,
-): Promise<string> {
+): Promise<ToolResponse> {
   if (!query.trim()) {
-    return "Please provide a non-empty link search query.";
+    return textResponse("Please provide a non-empty link search query.");
   }
 
   const embedding = await getEmbedding(query);
   const { supabase } = getContext();
+  const normalizedLimit = normalizeLimit(limit, 10);
+  const normalizedThreshold = normalizeThreshold(threshold);
 
   const { data, error } = await supabase.rpc("search_links", {
     query_embedding: JSON.stringify(embedding),
-    match_threshold: normalizeThreshold(threshold),
-    match_count: normalizeLimit(limit, 10),
+    match_threshold: normalizedThreshold,
+    match_count: normalizedLimit,
   });
 
   if (error) throw error;
 
   const results: LinkSearchResult[] = data || [];
   if (results.length === 0) {
-    return "No matching links found. Try a broader query or lower threshold.";
+    return {
+      text: "No matching links found. Try a broader query or lower threshold.",
+      structured: {
+        query,
+        threshold: normalizedThreshold,
+        limit: normalizedLimit,
+        results: [],
+      },
+    };
   }
 
-  return results
+  const text = results
     .map(
       (link, i) => `${i + 1}. **${link.title || "Untitled"}** (${(link.similarity * 100).toFixed(1)}% match)
    ${link.description?.slice(0, 200) || "No description"}${(link.description?.length ?? 0) > 200 ? "..." : ""}
@@ -459,9 +562,28 @@ async function handleSearchLinks(
    🔗 ${link.expanded_url || link.url}`,
     )
     .join("\n\n");
+
+  return {
+    text,
+    structured: {
+      query,
+      threshold: normalizedThreshold,
+      limit: normalizedLimit,
+      results: results.map((link) => ({
+        id: link.id,
+        tweet_id: link.tweet_id,
+        url: link.url,
+        expanded_url: link.expanded_url ?? null,
+        title: link.title ?? null,
+        description: link.description ?? null,
+        domain: link.domain ?? null,
+        similarity: link.similarity,
+      })),
+    },
+  };
 }
 
-async function handleGetTweet(tweetId: string): Promise<string> {
+async function handleGetTweet(tweetId: string): Promise<ToolResponse> {
   const { supabase } = getContext();
   const { data: tweet, error } = await supabase
     .from("tweets")
@@ -470,7 +592,10 @@ async function handleGetTweet(tweetId: string): Promise<string> {
     .single();
 
   if (error || !tweet) {
-    return `Tweet with ID ${tweetId} not found in the vault.`;
+    return {
+      text: `Tweet with ID ${tweetId} not found in the vault.`,
+      structured: { tweet_id: tweetId, found: false },
+    };
   }
 
   let result = `**@${tweet.author_username}** ${tweet.author_name ? `(${tweet.author_name})` : ""}
@@ -520,16 +645,24 @@ ${tweet.content}
     result += tweet.media_urls.map((url: string) => `- ${url}`).join("\n");
   }
 
-  return result;
+  return {
+    text: result,
+    structured: {
+      found: true,
+      tweet,
+      interactions: interactions ?? [],
+      links: links ?? [],
+    },
+  };
 }
 
 async function handleListLinksByDomain(
   domain: string,
   limit = 20,
-): Promise<string> {
+): Promise<ToolResponse> {
   const normalizedDomain = domain.trim();
   if (!normalizedDomain) {
-    return "Please provide a domain to search for.";
+    return textResponse("Please provide a domain to search for.");
   }
 
   const { supabase } = getContext();
@@ -541,24 +674,24 @@ async function handleListLinksByDomain(
 
   if (error) throw error;
   if (!links || links.length === 0) {
-    return `No links found from domain "${normalizedDomain}".`;
+    return textResponse(`No links found from domain "${normalizedDomain}".`);
   }
 
-  return (
+  return textResponse(
     `Found ${links.length} links from "${normalizedDomain}":\n\n` +
-    links
+      links
       .map(
         (link: Link, i: number) => `${i + 1}. **${link.title || "Untitled"}**
    ${link.expanded_url || link.url}
    From tweet_id: ${link.tweet_id ?? "unknown"}`,
       )
-      .join("\n\n")
+      .join("\n\n"),
   );
 }
 
-async function handleFindRelated(topic: string, limit = 5): Promise<string> {
+async function handleFindRelated(topic: string, limit = 5): Promise<ToolResponse> {
   if (!topic.trim()) {
-    return "Please provide a topic to search for.";
+    return textResponse("Please provide a topic to search for.");
   }
 
   const embedding = await getEmbedding(topic);
@@ -609,10 +742,10 @@ async function handleFindRelated(topic: string, limit = 5): Promise<string> {
     result += "### 🔗 Related Links\nNo matching links found.\n";
   }
 
-  return result;
+  return textResponse(result);
 }
 
-async function handleVaultStats(): Promise<string> {
+async function handleVaultStats(): Promise<ToolResponse> {
   const { supabase } = getContext();
   const { data: stats, error } = await supabase.rpc("vault_stats");
 
@@ -653,7 +786,14 @@ async function handleVaultStats(): Promise<string> {
       response += `\n\n**Last Sync:**\n- Time: ${new Date(stats.last_sync.last_sync_at).toLocaleString()}`;
     }
 
-    return response;
+    return {
+      text: response,
+      structured: {
+        stats,
+        top_authors: topAuthors,
+        top_domains: topDomains,
+      },
+    };
   }
 
   // Fallback for pre-migration environments.
@@ -665,20 +805,36 @@ async function handleVaultStats(): Promise<string> {
     .from("links")
     .select("*", { count: "exact", head: true });
 
-  return `## 📊 Tweet Vault Statistics
+  return {
+    text: `## 📊 Tweet Vault Statistics
 
 **Totals:**
 - Tweets: ${totalTweets ?? 0}
-- Links: ${totalLinks ?? 0}`;
+- Links: ${totalLinks ?? 0}`,
+    structured: {
+      stats: {
+        total_tweets: totalTweets ?? 0,
+        total_links: totalLinks ?? 0,
+      },
+    },
+  };
+}
+
+async function handleVaultHealth(): Promise<ToolResponse> {
+  const health = await getVaultHealth();
+  return {
+    text: formatVaultHealth(health),
+    structured: { health },
+  };
 }
 
 async function handleListAuthors(
   username: string,
   limit = 20,
-): Promise<string> {
+): Promise<ToolResponse> {
   const normalizedUsername = normalizeUsername(username);
   if (!normalizedUsername) {
-    return "Please provide a Twitter username.";
+    return textResponse("Please provide a Twitter username.");
   }
 
   const { supabase } = getContext();
@@ -692,18 +848,18 @@ async function handleListAuthors(
   if (error) throw error;
 
   if (!tweets || tweets.length === 0) {
-    return `No saved tweets found from @${normalizedUsername}.`;
+    return textResponse(`No saved tweets found from @${normalizedUsername}.`);
   }
 
-  return (
+  return textResponse(
     `Found ${tweets.length} saved tweets from @${normalizedUsername}:\n\n` +
-    tweets
+      tweets
       .map(
         (tweet: Tweet, i: number) => `${i + 1}. ${tweet.content.slice(0, 200)}${tweet.content.length > 200 ? "..." : ""}
    📅 ${tweet.created_at ? new Date(tweet.created_at).toLocaleDateString() : "Unknown"}
    ❤️ ${tweet.metrics?.likes ?? 0} | 🔁 ${tweet.metrics?.retweets ?? 0}`,
       )
-      .join("\n\n")
+      .join("\n\n"),
   );
 }
 
@@ -725,65 +881,95 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
   try {
-    let result: string;
+    let result: ToolResponse;
 
     switch (name) {
-      case "search_tweets":
+      case "search_tweets": {
+        const parsed = parseToolArgs(SearchTweetsArgsSchema, args);
         result = await handleSearchTweets(
-          args?.query as string,
-          args?.limit as number,
-          args?.threshold as number,
-          normalizeInteractionFilter(args?.interaction_type as string),
+          parsed.query,
+          parsed.limit,
+          parsed.threshold,
+          normalizeInteractionFilter(parsed.interaction_type),
         );
         break;
-      case "search_likes":
+      }
+      case "search_likes": {
+        const parsed = parseToolArgs(SearchLinksArgsSchema, args);
         result = await handleSearchLikes(
-          args?.query as string,
-          args?.limit as number,
-          args?.threshold as number,
+          parsed.query,
+          parsed.limit,
+          parsed.threshold,
         );
         break;
-      case "search_links":
+      }
+      case "search_links": {
+        const parsed = parseToolArgs(SearchLinksArgsSchema, args);
         result = await handleSearchLinks(
-          args?.query as string,
-          args?.limit as number,
-          args?.threshold as number,
+          parsed.query,
+          parsed.limit,
+          parsed.threshold,
         );
         break;
-      case "get_tweet":
-        result = await handleGetTweet(args?.tweet_id as string);
+      }
+      case "get_tweet": {
+        const parsed = parseToolArgs(GetTweetArgsSchema, args);
+        result = await handleGetTweet(parsed.tweet_id);
         break;
-      case "list_links_by_domain":
+      }
+      case "list_links_by_domain": {
+        const parsed = parseToolArgs(DomainArgsSchema, args);
         result = await handleListLinksByDomain(
-          args?.domain as string,
-          args?.limit as number,
+          parsed.domain,
+          parsed.limit,
         );
         break;
-      case "find_related":
+      }
+      case "find_related": {
+        const parsed = parseToolArgs(TopicArgsSchema, args);
         result = await handleFindRelated(
-          args?.topic as string,
-          args?.limit as number,
+          parsed.topic,
+          parsed.limit,
         );
         break;
+      }
       case "vault_stats":
+        parseToolArgs(NoArgsSchema, args);
         result = await handleVaultStats();
         break;
-      case "list_authors":
+      case "vault_health":
+        parseToolArgs(NoArgsSchema, args);
+        result = await handleVaultHealth();
+        break;
+      case "list_authors": {
+        const parsed = parseToolArgs(UsernameArgsSchema, args);
         result = await handleListAuthors(
-          args?.username as string,
-          args?.limit as number,
+          parsed.username,
+          parsed.limit,
         );
         break;
+      }
       default:
-        result = `Unknown tool: ${name}`;
+        result = textResponse(`Unknown tool: ${name}`);
     }
 
-    return {
-      content: [{ type: "text", text: result }],
+    const response: {
+      content: Array<{ type: "text"; text: string }>;
+      structuredContent?: Record<string, unknown>;
+    } = {
+      content: [{ type: "text", text: result.text }],
     };
+    if (result.structured) {
+      response.structuredContent = result.structured;
+    }
+    return response;
   } catch (error) {
     const errorMessage =
-      error instanceof Error ? error.message : "Unknown error";
+      error instanceof z.ZodError
+        ? error.issues.map((issue) => issue.message).join("; ")
+        : error instanceof Error
+          ? error.message
+          : "Unknown error";
     return {
       content: [{ type: "text", text: `Error: ${errorMessage}` }],
       isError: true,

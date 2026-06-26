@@ -166,11 +166,11 @@ join tweet_vault.tweets t
   on t.tweet_id = ti.tweet_id
 where ti.interaction_type = 'like';
 
-grant select, insert, update on tweet_vault.tweet_interactions to anon, authenticated;
-grant select on tweet_vault.twitter_likes to anon, authenticated;
-grant usage, select on all sequences in schema tweet_vault to anon, authenticated;
-grant execute on function tweet_vault.vault_stats to anon, authenticated;
-grant execute on function tweet_vault.get_tweet_vault_stats to anon, authenticated;
+grant select, insert, update on tweet_vault.tweet_interactions to service_role;
+grant select on tweet_vault.twitter_likes to service_role;
+grant usage, select on all sequences in schema tweet_vault to service_role;
+grant execute on function tweet_vault.vault_stats to service_role;
+grant execute on function tweet_vault.get_tweet_vault_stats to service_role;
 
 comment on table tweet_vault.tweet_interactions is 'Interaction log for canonical tweets (bookmark/like).';
 comment on view tweet_vault.twitter_likes is 'Compatibility view over canonical tweets + like interactions.';

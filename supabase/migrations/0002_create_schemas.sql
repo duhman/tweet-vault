@@ -5,14 +5,12 @@
 CREATE SCHEMA IF NOT EXISTS star_vault;
 CREATE SCHEMA IF NOT EXISTS tweet_vault;
 CREATE SCHEMA IF NOT EXISTS self_host;
--- Grant usage to anonymous and authenticated roles
--- This allows PostgREST to access tables in these schemas
+-- Grant usage conservatively. tweet_vault is a personal service-role
+-- automation surface, not a public PostgREST API.
 GRANT USAGE ON SCHEMA star_vault TO anon,
 authenticated,
 service_role;
-GRANT USAGE ON SCHEMA tweet_vault TO anon,
-authenticated,
-service_role;
+GRANT USAGE ON SCHEMA tweet_vault TO service_role;
 GRANT USAGE ON SCHEMA self_host TO anon,
 authenticated,
 service_role;
@@ -31,8 +29,7 @@ SELECT
 ,
   INSERT,
 UPDATE,
-DELETE ON TABLES TO anon,
-authenticated;
+DELETE ON TABLES TO service_role;
 ALTER DEFAULT PRIVILEGES IN SCHEMA self_host
 GRANT
 SELECT
@@ -50,8 +47,7 @@ SELECT
 ALTER DEFAULT PRIVILEGES IN SCHEMA tweet_vault
 GRANT USAGE,
 SELECT
-  ON SEQUENCES TO anon,
-  authenticated;
+  ON SEQUENCES TO service_role;
 ALTER DEFAULT PRIVILEGES IN SCHEMA self_host
 GRANT USAGE,
 SELECT
@@ -64,8 +60,7 @@ EXECUTE ON FUNCTIONS TO anon,
 authenticated;
 ALTER DEFAULT PRIVILEGES IN SCHEMA tweet_vault
 GRANT
-EXECUTE ON FUNCTIONS TO anon,
-authenticated;
+EXECUTE ON FUNCTIONS TO service_role;
 ALTER DEFAULT PRIVILEGES IN SCHEMA self_host
 GRANT
 EXECUTE ON FUNCTIONS TO anon,

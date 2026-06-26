@@ -2,13 +2,18 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.47.0";
 import {
+  EMBEDDING_DIMENSIONS,
   EMBEDDING_MODEL,
+  EMBEDDING_PROVIDER_GEMINI,
+  EMBEDDING_PROVIDER_OPENAI,
   DEFAULT_MAX_INPUT_CHARS,
   DEFAULT_METADATA_RETRY_COOLDOWN_HOURS,
+  GEMINI_EMBEDDING_MODEL,
   clampEmbeddingInput,
   createLinkEmbeddingText,
   createTweetEmbeddingText,
   fetchLinkMetadataWithStrategy,
+  getEmbeddingProviderMetadata,
   isLinkReadyForEmbedding,
   selectLinksForMetadataProcessing,
 } from "../../../shared/processing.js";
@@ -20,13 +25,12 @@ const corsHeaders = {
 };
 
 const SCHEMA = Deno.env.get("SUPABASE_SCHEMA") || "tweet_vault";
-const EMBEDDING_DIMENSIONS = 1536;
-const GEMINI_EMBEDDING_MODEL = "gemini-embedding-001";
 
 interface ProcessResult {
   tweets_embedded: number;
   links_metadata_fetched: number;
   links_embedded: number;
+  embedding_provider: string;
   errors: string[];
 }
 
@@ -127,6 +131,10 @@ Deno.serve(async (req) => {
     const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const openaiKey = Deno.env.get("OPENAI_API_KEY") || null;
     const geminiKey = Deno.env.get("GOOGLE_API_KEY") || Deno.env.get("GEMINI_API_KEY") || null;
+    const embeddingProvider = geminiKey
+      ? EMBEDDING_PROVIDER_GEMINI
+      : EMBEDDING_PROVIDER_OPENAI;
+    const embeddingMetadata = getEmbeddingProviderMetadata(embeddingProvider);
 
     if (!supabaseUrl || !supabaseKey || (!openaiKey && !geminiKey)) {
       return new Response(
@@ -149,6 +157,7 @@ Deno.serve(async (req) => {
       tweets_embedded: 0,
       links_metadata_fetched: 0,
       links_embedded: 0,
+      embedding_provider: embeddingProvider,
       errors: [],
     };
 
@@ -205,7 +214,15 @@ Deno.serve(async (req) => {
         const metadata = await fetchLinkMetadataWithStrategy(
           fetch,
           link.expanded_url || link.url,
-        );
+        ) as {
+          ok: boolean;
+          title?: string;
+          description?: string;
+          og_image?: string;
+          domain?: string;
+          errorType?: string;
+          errorMessage?: string;
+        };
         const updates: Record<string, unknown> = {
           fetched_at: new Date().toISOString(),
           domain: metadata.domain ?? null,
@@ -276,9 +293,17 @@ Deno.serve(async (req) => {
       embeddings_generated: result.tweets_embedded + result.links_embedded,
       sync_type: "cron",
       metadata: {
+        function_name: "process-tweets",
+        schema: SCHEMA,
+        embedding: embeddingMetadata,
+        provider: embeddingProvider,
+        fetched_count: 0,
+        tweets_added: 0,
         tweets_embedded: result.tweets_embedded,
         links_metadata_fetched: result.links_metadata_fetched,
         links_embedded: result.links_embedded,
+        links_processed: result.links_metadata_fetched,
+        embeddings_generated: result.tweets_embedded + result.links_embedded,
         errors_count: result.errors.length,
         errors: result.errors.slice(0, 20),
       },
