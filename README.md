@@ -11,7 +11,7 @@ Tweet Vault makes your Twitter/X bookmarks and likes searchable with natural lan
 - 🤖 **Claude MCP Integration** — Query bookmarks + likes directly from Claude
 - 🐦 **Bird CLI Integration** — Sync bookmarks and likes automatically from Twitter
 - ⏰ **Daily Processing** — Syncs new tweets and drains enrichment backlog via Supabase pg_cron or local backlog commands
-- 🧠 **Smart Embeddings** — OpenAI text-embedding-3-small (1536 dimensions)
+- 🧠 **Smart Embeddings** — Gemini `gemini-embedding-001` or OpenAI `text-embedding-3-small` with 1536 dimensions
 - ⚡ **Fast Vector Search** — pgvector with HNSW indexes
 
 ## Architecture
@@ -43,7 +43,7 @@ Tweet Vault makes your Twitter/X bookmarks and likes searchable with natural lan
 
 - [Bun](https://bun.sh) 1.2+
 - [Supabase](https://supabase.com) project with pgvector extension
-- [OpenAI API key](https://platform.openai.com/api-keys)
+- Google/Gemini API key for embeddings, or OpenAI as fallback
 - Twitter/X account with bookmarks/likes
 
 ### Installation
@@ -70,7 +70,7 @@ cp .env.example .env
 ```bash
 supabase functions deploy tweet-vault-sync --project-ref <your-project-ref>
 supabase functions deploy process-tweets --project-ref <your-project-ref>
-supabase secrets set OPENAI_API_KEY="<your-key>" --project-ref <your-project-ref>
+supabase secrets set GOOGLE_API_KEY="<your-key>" --project-ref <your-project-ref>
 ```
 
 Cron schedules contain project-specific function URLs and invocation headers. Do not commit rendered schedules; apply them from `supabase/templates/tweet-vault-cron.sql` with private deployment credentials.
@@ -131,7 +131,7 @@ Add to your Claude MCP configuration (`~/.claude.json` or Claude Desktop setting
       "env": {
         "SUPABASE_URL": "https://your-project.supabase.co",
         "SUPABASE_SERVICE_ROLE_KEY": "your-service-role-key",
-        "OPENAI_API_KEY": "your-openai-key"
+        "GOOGLE_API_KEY": "your-google-key"
       }
     }
   }
@@ -199,19 +199,20 @@ Once configured, ask Claude things like:
 
 ### Local CLI (.env)
 
-| Variable                    | Required | Description                          |
-| --------------------------- | -------- | ------------------------------------ |
-| `SUPABASE_URL`              | Yes      | Supabase project URL                 |
-| `SUPABASE_SERVICE_ROLE_KEY` | Yes      | Supabase service role key            |
-| `OPENAI_API_KEY`            | Yes      | OpenAI API key for embeddings        |
-| `SUPABASE_SCHEMA`           | No       | Schema name (default: `tweet_vault`) |
+| Variable                            | Required  | Description                                                    |
+| ----------------------------------- | --------- | -------------------------------------------------------------- |
+| `SUPABASE_URL`                      | Yes       | Supabase project URL                                           |
+| `SUPABASE_SERVICE_ROLE_KEY`         | Yes       | Supabase service role key                                      |
+| `GOOGLE_API_KEY` / `GEMINI_API_KEY` | Preferred | Gemini API key for embeddings                                  |
+| `OPENAI_API_KEY`                    | Fallback  | OpenAI API key for embeddings when no Google/Gemini key is set |
+| `SUPABASE_SCHEMA`                   | No        | Schema name (default: `tweet_vault`)                           |
 
 ### Edge Function (Supabase Dashboard)
 
-| Variable         | Description              |
-| ---------------- | ------------------------ |
-| `OPENAI_API_KEY` | For embedding generation |
-| `GOOGLE_API_KEY` / `GEMINI_API_KEY` | Optional Gemini embedding fallback for Edge Functions |
+| Variable                            | Description                                             |
+| ----------------------------------- | ------------------------------------------------------- |
+| `GOOGLE_API_KEY` / `GEMINI_API_KEY` | Preferred Gemini embedding key                          |
+| `OPENAI_API_KEY`                    | Fallback embedding key when no Google/Gemini key is set |
 
 ## Database Schema
 
@@ -238,7 +239,7 @@ Once configured, ask Claude things like:
 4. **Store** — Upsert to Supabase
 5. **Extract Links** — Parse URLs from tweet content (Edge Function)
 6. **Fetch Metadata** — GET each URL, extract og:title, og:description
-7. **Generate Embeddings** — OpenAI text-embedding-3-small (1536d)
+7. **Generate Embeddings** — Gemini preferred, OpenAI fallback, both 1536d
 
 ## Automated Processing
 
@@ -287,7 +288,7 @@ For the current live deployment state, cron topology, and security-hardening ver
 - **Language**: TypeScript 5.7
 - **Database**: [Supabase](https://supabase.com) (PostgreSQL + pgvector)
 - **Processing**: Supabase Edge Functions (Deno) + pg_cron
-- **Embeddings**: OpenAI text-embedding-3-small (1536d)
+- **Embeddings**: Gemini `gemini-embedding-001` preferred; OpenAI `text-embedding-3-small` fallback; both 1536d
 - **Vector Index**: pgvector HNSW
 - **Validation**: [Zod](https://zod.dev)
 - **MCP**: [@modelcontextprotocol/sdk](https://github.com/modelcontextprotocol/sdk)

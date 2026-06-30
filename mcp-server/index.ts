@@ -13,11 +13,18 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { config } from "dotenv";
 import { createClient } from "@supabase/supabase-js";
-import OpenAI from "openai";
 import { fileURLToPath } from "url";
 import { z } from "zod";
-import { formatMissingEnvMessage, getMissingEnvVars } from "../shared/runtime.js";
+import {
+  formatMissingEnvMessage,
+  getMissingEnvVars,
+} from "../shared/runtime.js";
 import { formatVaultHealth, getVaultHealth } from "../src/utils/health.js";
+import {
+  getEmbeddingProvider,
+  getMissingEmbeddingEnvVars,
+  type EmbeddingProvider,
+} from "../shared/embedding-provider.js";
 
 // override: true ensures project .env wins over stale shell exports
 // (e.g. SUPABASE_SCHEMA=star_vault leaking from another project session)
@@ -26,13 +33,12 @@ config({ override: true });
 const REQUIRED_ENV_VARS = [
   "SUPABASE_URL",
   "SUPABASE_SERVICE_ROLE_KEY",
-  "OPENAI_API_KEY",
 ] as const;
 
 type AppContext = {
   schema: string;
   supabase: any;
-  openai: OpenAI;
+  embeddingProvider: EmbeddingProvider;
 };
 
 type ToolResponse = {
@@ -91,12 +97,19 @@ function getContext(): AppContext {
   return appContext;
 }
 
-function normalizeLimit(limit: number | undefined, defaultValue: number, max = 50): number {
+function normalizeLimit(
+  limit: number | undefined,
+  defaultValue: number,
+  max = 50,
+): number {
   if (!Number.isFinite(limit)) return defaultValue;
   return Math.min(max, Math.max(1, Math.floor(limit as number)));
 }
 
-function normalizeThreshold(threshold: number | undefined, defaultValue = 0.5): number {
+function normalizeThreshold(
+  threshold: number | undefined,
+  defaultValue = 0.5,
+): number {
   if (!Number.isFinite(threshold)) return defaultValue;
   return Math.min(1, Math.max(0, threshold as number));
 }
@@ -150,16 +163,27 @@ function parseToolArgs<T extends z.ZodTypeAny>(
   return schema.parse(args ?? {});
 }
 
-export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): string[] {
-  return getMissingEnvVars(env, [...REQUIRED_ENV_VARS]);
+export function validateEnvironment(
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  return [
+    ...getMissingEnvVars(env, [...REQUIRED_ENV_VARS]),
+    ...getMissingEmbeddingEnvVars(env),
+  ];
 }
 
 async function validateRemoteContracts(context: AppContext): Promise<void> {
   const { supabase, schema } = context;
 
   const checks = await Promise.all([
-    supabase.from("tweets").select("tweet_id", { head: true, count: "exact" }).limit(1),
-    supabase.from("links").select("id", { head: true, count: "exact" }).limit(1),
+    supabase
+      .from("tweets")
+      .select("tweet_id", { head: true, count: "exact" })
+      .limit(1),
+    supabase
+      .from("links")
+      .select("id", { head: true, count: "exact" })
+      .limit(1),
     supabase
       .from("tweet_interactions")
       .select("tweet_id", { head: true, count: "exact" })
@@ -181,7 +205,10 @@ export async function createContext(
 ): Promise<AppContext> {
   const missingEnv = validateEnvironment(env);
   if (missingEnv.length > 0) {
-    throw new Error(formatMissingEnvMessage(missingEnv) ?? "Missing required environment variables.");
+    throw new Error(
+      formatMissingEnvMessage(missingEnv) ??
+        "Missing required environment variables.",
+    );
   }
 
   const schema = env.SUPABASE_SCHEMA || "tweet_vault";
@@ -190,7 +217,7 @@ export async function createContext(
     supabase: createClient(env.SUPABASE_URL!, env.SUPABASE_SERVICE_ROLE_KEY!, {
       db: { schema },
     } as any),
-    openai: new OpenAI({ apiKey: env.OPENAI_API_KEY }),
+    embeddingProvider: getEmbeddingProvider(env),
   };
 
   if (!options.skipRemoteValidation) {
@@ -201,11 +228,8 @@ export async function createContext(
 }
 
 async function getEmbedding(text: string): Promise<number[]> {
-  const response = await getContext().openai.embeddings.create({
-    model: "text-embedding-3-small",
-    input: text,
-  });
-  return response.data[0].embedding;
+  const embeddings = await getContext().embeddingProvider.embed([text]);
+  return embeddings[0];
 }
 
 function normalizeInteractionFilter(value?: string): InteractionFilter {
@@ -278,7 +302,8 @@ const tools: Tool[] = [
       properties: {
         query: {
           type: "string",
-          description: "Natural language description of the tweet content to find",
+          description:
+            "Natural language description of the tweet content to find",
         },
         limit: {
           type: "number",
@@ -556,7 +581,10 @@ async function handleSearchLinks(
 
   const text = results
     .map(
-      (link, i) => `${i + 1}. **${link.title || "Untitled"}** (${(link.similarity * 100).toFixed(1)}% match)
+      (
+        link,
+        i,
+      ) => `${i + 1}. **${link.title || "Untitled"}** (${(link.similarity * 100).toFixed(1)}% match)
    ${link.description?.slice(0, 200) || "No description"}${(link.description?.length ?? 0) > 200 ? "..." : ""}
    🌐 ${link.domain || "Unknown domain"}
    🔗 ${link.expanded_url || link.url}`,
@@ -680,16 +708,19 @@ async function handleListLinksByDomain(
   return textResponse(
     `Found ${links.length} links from "${normalizedDomain}":\n\n` +
       links
-      .map(
-        (link: Link, i: number) => `${i + 1}. **${link.title || "Untitled"}**
+        .map(
+          (link: Link, i: number) => `${i + 1}. **${link.title || "Untitled"}**
    ${link.expanded_url || link.url}
    From tweet_id: ${link.tweet_id ?? "unknown"}`,
-      )
-      .join("\n\n"),
+        )
+        .join("\n\n"),
   );
 }
 
-async function handleFindRelated(topic: string, limit = 5): Promise<ToolResponse> {
+async function handleFindRelated(
+  topic: string,
+  limit = 5,
+): Promise<ToolResponse> {
   if (!topic.trim()) {
     return textResponse("Please provide a topic to search for.");
   }
@@ -733,7 +764,10 @@ async function handleFindRelated(topic: string, limit = 5): Promise<ToolResponse
     result += "### 🔗 Related Links\n\n";
     result += linkResults
       .map(
-        (link, i) => `${i + 1}. **${link.title || "Untitled"}** (${(link.similarity * 100).toFixed(0)}%)
+        (
+          link,
+          i,
+        ) => `${i + 1}. **${link.title || "Untitled"}** (${(link.similarity * 100).toFixed(0)}%)
    ${link.expanded_url || link.url}
    ${link.description?.slice(0, 100) || ""}...`,
       )
@@ -854,12 +888,15 @@ async function handleListAuthors(
   return textResponse(
     `Found ${tweets.length} saved tweets from @${normalizedUsername}:\n\n` +
       tweets
-      .map(
-        (tweet: Tweet, i: number) => `${i + 1}. ${tweet.content.slice(0, 200)}${tweet.content.length > 200 ? "..." : ""}
+        .map(
+          (
+            tweet: Tweet,
+            i: number,
+          ) => `${i + 1}. ${tweet.content.slice(0, 200)}${tweet.content.length > 200 ? "..." : ""}
    📅 ${tweet.created_at ? new Date(tweet.created_at).toLocaleDateString() : "Unknown"}
    ❤️ ${tweet.metrics?.likes ?? 0} | 🔁 ${tweet.metrics?.retweets ?? 0}`,
-      )
-      .join("\n\n"),
+        )
+        .join("\n\n"),
   );
 }
 
@@ -919,18 +956,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
       case "list_links_by_domain": {
         const parsed = parseToolArgs(DomainArgsSchema, args);
-        result = await handleListLinksByDomain(
-          parsed.domain,
-          parsed.limit,
-        );
+        result = await handleListLinksByDomain(parsed.domain, parsed.limit);
         break;
       }
       case "find_related": {
         const parsed = parseToolArgs(TopicArgsSchema, args);
-        result = await handleFindRelated(
-          parsed.topic,
-          parsed.limit,
-        );
+        result = await handleFindRelated(parsed.topic, parsed.limit);
         break;
       }
       case "vault_stats":
@@ -943,10 +974,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         break;
       case "list_authors": {
         const parsed = parseToolArgs(UsernameArgsSchema, args);
-        result = await handleListAuthors(
-          parsed.username,
-          parsed.limit,
-        );
+        result = await handleListAuthors(parsed.username, parsed.limit);
         break;
       }
       default:

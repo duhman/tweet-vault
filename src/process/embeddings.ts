@@ -1,4 +1,3 @@
-import OpenAI from "openai";
 import {
   getTweetsWithoutEmbeddings,
   getLinksWithoutEmbeddings,
@@ -6,27 +5,13 @@ import {
   updateLinkEmbedding,
 } from "../utils/supabase.js";
 import {
-  EMBEDDING_MODEL,
   DEFAULT_MAX_INPUT_CHARS,
   DEFAULT_EMBEDDING_RETRIES,
   clampEmbeddingInput,
   createTweetEmbeddingText,
   createLinkEmbeddingText,
 } from "../../shared/processing.js";
-
-let openaiClient: OpenAI | null = null;
-
-function getOpenAIClient(): OpenAI {
-  if (openaiClient) return openaiClient;
-
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    throw new Error("OPENAI_API_KEY environment variable is missing or empty");
-  }
-
-  openaiClient = new OpenAI({ apiKey });
-  return openaiClient;
-}
+import { getEmbeddingProvider } from "../../shared/embedding-provider.js";
 
 interface EmbeddingOptions {
   concurrency?: number;
@@ -63,12 +48,7 @@ async function withRetry<T>(
 }
 
 async function generateEmbeddings(texts: string[]): Promise<number[][]> {
-  const response = await getOpenAIClient().embeddings.create({
-    model: EMBEDDING_MODEL,
-    input: texts,
-  });
-
-  return response.data.map((item) => item.embedding);
+  return getEmbeddingProvider().embed(texts);
 }
 
 async function processTweetEmbeddings(
@@ -95,7 +75,10 @@ async function processTweetEmbeddings(
           await updateTweetEmbedding(batch[j].tweet_id, embeddings[j]);
           processed += 1;
         } catch (error) {
-          console.error(`Failed to persist tweet embedding ${batch[j].tweet_id}:`, error);
+          console.error(
+            `Failed to persist tweet embedding ${batch[j].tweet_id}:`,
+            error,
+          );
           failed += 1;
         }
       }
@@ -132,7 +115,10 @@ async function processLinkEmbeddings(
           await updateLinkEmbedding(batch[j].id!, embeddings[j]);
           processed += 1;
         } catch (error) {
-          console.error(`Failed to persist link embedding ${batch[j].id}:`, error);
+          console.error(
+            `Failed to persist link embedding ${batch[j].id}:`,
+            error,
+          );
           failed += 1;
         }
       }
@@ -158,7 +144,10 @@ export async function processAllEmbeddings(
 
   const concurrency = Math.max(1, options.concurrency ?? 3);
   const batchSize = Math.max(10, options.batchSize ?? concurrency * 20);
-  const embedBatchSize = Math.max(1, options.embedBatchSize ?? Math.min(20, concurrency * 5));
+  const embedBatchSize = Math.max(
+    1,
+    options.embedBatchSize ?? Math.min(20, concurrency * 5),
+  );
   const maxRounds = Math.max(1, options.maxRounds ?? 10);
   const maxInputChars = Math.max(
     500,

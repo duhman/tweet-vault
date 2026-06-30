@@ -71,14 +71,14 @@ Cron schedules contain project-specific function URLs and invocation headers. Ap
 
 ## Key Files
 
-| Path                                 | Purpose                            |
-| ------------------------------------ | ---------------------------------- |
-| `mcp-server/index.ts`                | MCP server (9 tools for Codex)     |
+| Path                                 | Purpose                              |
+| ------------------------------------ | ------------------------------------ |
+| `mcp-server/index.ts`                | MCP server (9 tools for Codex)       |
 | `scripts/sync-from-bird.ts`          | Canonical sync for bookmarks + likes |
-| `src/process/*.ts`                   | Processing helpers (tweets, links) |
-| `src/utils/supabase.ts`              | Supabase client utilities          |
-| `supabase/functions/process-tweets/` | Edge Function for daily processing |
-| `supabase/migrations/`               | Database schema and RPC functions  |
+| `src/process/*.ts`                   | Processing helpers (tweets, links)   |
+| `src/utils/supabase.ts`              | Supabase client utilities            |
+| `supabase/functions/process-tweets/` | Edge Function for daily processing   |
+| `supabase/migrations/`               | Database schema and RPC functions    |
 
 ## MCP Server Tools
 
@@ -98,25 +98,27 @@ Cron schedules contain project-specific function URLs and invocation headers. Ap
 
 ### Local CLI (.env)
 
-| Variable                    | Purpose                                    |
-| --------------------------- | ------------------------------------------ |
-| `SUPABASE_URL`              | `https://brawengrbiuvnmsyqhoe.supabase.co` |
-| `SUPABASE_SERVICE_ROLE_KEY` | Database access for CLI sync               |
-| `OPENAI_API_KEY`            | Embedding generation                       |
+| Variable                            | Purpose                                    |
+| ----------------------------------- | ------------------------------------------ |
+| `SUPABASE_URL`                      | `https://brawengrbiuvnmsyqhoe.supabase.co` |
+| `SUPABASE_SERVICE_ROLE_KEY`         | Database access for CLI sync               |
+| `GOOGLE_API_KEY` / `GEMINI_API_KEY` | Preferred Gemini embedding key             |
+| `OPENAI_API_KEY`                    | Fallback embedding key                     |
 
 ### Supabase Edge Function (Dashboard → Edge Functions → Secrets)
 
-- `OPENAI_API_KEY` - For embedding generation
-- `GOOGLE_API_KEY` / `GEMINI_API_KEY` - Optional Gemini fallback for Edge Function embeddings
+- `GOOGLE_API_KEY` / `GEMINI_API_KEY` - Preferred Gemini embedding key
+- `OPENAI_API_KEY` - Fallback embedding key when no Google/Gemini key is set
 
 ### MCP Server (configured in MCP client configs)
 
-| Variable                     | Value                                      |
-| ---------------------------- | ------------------------------------------ |
-| `SUPABASE_URL`               | `https://brawengrbiuvnmsyqhoe.supabase.co` |
-| `SUPABASE_SERVICE_ROLE_KEY`  | `${PRIVATEBASE_SERVICE_ROLE_KEY}`          |
-| `OPENAI_API_KEY`             | `${OPENAI_API_KEY}`                        |
-| `SUPABASE_SCHEMA` (optional) | `tweet_vault` (default)                    |
+| Variable                            | Value                                      |
+| ----------------------------------- | ------------------------------------------ |
+| `SUPABASE_URL`                      | `https://brawengrbiuvnmsyqhoe.supabase.co` |
+| `SUPABASE_SERVICE_ROLE_KEY`         | `${PRIVATEBASE_SERVICE_ROLE_KEY}`          |
+| `GOOGLE_API_KEY` / `GEMINI_API_KEY` | Preferred local/project embedding key      |
+| `OPENAI_API_KEY`                    | Optional fallback embedding key            |
+| `SUPABASE_SCHEMA` (optional)        | `tweet_vault` (default)                    |
 
 ## Common Tasks
 
@@ -157,7 +159,7 @@ bun run smoke:mcp
 - **Runtime**: Bun 1.2+
 - **Database**: Supabase Cloud (pgvector with HNSW indexes)
 - **Processing**: Supabase Edge Functions (Deno) + pg_cron
-- **Embeddings**: OpenAI text-embedding-3-small (1536d)
+- **Embeddings**: Gemini `gemini-embedding-001` preferred; OpenAI `text-embedding-3-small` fallback; both 1536d
 - **Twitter Integration**: @steipete/bird (GraphQL API via Safari cookies)
 - **MCP**: @modelcontextprotocol/sdk
 - **Validation**: Zod

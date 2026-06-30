@@ -5,6 +5,7 @@ import { spawnSync } from "child_process";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { validateEnvironment } from "../mcp-server/index.js";
+import { getEmbeddingProvider } from "../shared/embedding-provider.js";
 
 const cwd = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -30,7 +31,42 @@ test("MCP validation reports missing environment clearly", () => {
     OPENAI_API_KEY: "",
   } as NodeJS.ProcessEnv);
 
-  assert.deepEqual(missing, ["SUPABASE_URL", "OPENAI_API_KEY"]);
+  assert.deepEqual(missing, [
+    "SUPABASE_URL",
+    "OPENAI_API_KEY or GOOGLE_API_KEY/GEMINI_API_KEY",
+  ]);
+});
+
+test("MCP validation accepts a Google embedding key without OpenAI", () => {
+  const missing = validateEnvironment({
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SERVICE_ROLE_KEY: "set",
+    GOOGLE_API_KEY: "test-google-key",
+    OPENAI_API_KEY: "",
+  } as NodeJS.ProcessEnv);
+
+  assert.deepEqual(missing, []);
+});
+
+test("embedding provider prefers Gemini when a Google key is present", () => {
+  const provider = getEmbeddingProvider({
+    GOOGLE_API_KEY: "test-google-key",
+    OPENAI_API_KEY: "test-openai-key",
+  } as NodeJS.ProcessEnv);
+
+  assert.equal(provider.name, "gemini");
+  assert.equal(provider.model, "gemini-embedding-001");
+  assert.equal(provider.dimensions, 1536);
+});
+
+test("embedding provider keeps OpenAI as fallback", () => {
+  const provider = getEmbeddingProvider({
+    OPENAI_API_KEY: "test-openai-key",
+  } as NodeJS.ProcessEnv);
+
+  assert.equal(provider.name, "openai");
+  assert.equal(provider.model, "text-embedding-3-small");
+  assert.equal(provider.dimensions, 1536);
 });
 
 test("MCP healthcheck can run offline with mocked env", () => {
@@ -40,7 +76,8 @@ test("MCP healthcheck can run offline with mocked env", () => {
       ...process.env,
       SUPABASE_URL: "https://example.supabase.co",
       SUPABASE_SERVICE_ROLE_KEY: "test-service-role",
-      OPENAI_API_KEY: "test-openai-key",
+      GOOGLE_API_KEY: "test-google-key",
+      OPENAI_API_KEY: "",
       MCP_SKIP_REMOTE_VALIDATION: "1",
     },
     encoding: "utf8",
