@@ -93,24 +93,7 @@ bun run sync --likes-only
 bun run sync --bookmarks-only
 ```
 
-**Option 2: Direct Obsidian Export (No Supabase Required)**
-
-If the immediate goal is to get saved tweets into the brain, you can bypass Supabase and export straight into the Obsidian inbox using your Safari-authenticated X session:
-
-```bash
-# Export recent bookmarks to the Obsidian inbox
-bun run export:obsidian -- --bookmarks-only --count=20
-
-# Export likes instead
-bun run export:obsidian -- --likes-only --count=20
-
-# Override destination folder if needed
-bun run export:obsidian -- --bookmarks-only --output=/path/to/00-Inbox/feeds/twitter
-```
-
-This creates deterministic markdown notes suitable for downstream triage and promotion in `obsidian-memory`.
-
-**Option 3: Manual JSON Export**
+**Option 2: Manual JSON Export**
 
 ```bash
 # Export bookmarks using twitter-web-exporter browser extension
@@ -181,19 +164,18 @@ Once configured, ask Claude things like:
 
 ## Commands
 
-| Command                                                  | Description                                       |
-| -------------------------------------------------------- | ------------------------------------------------- |
-| `bun run sync`                                           | Sync bookmarks + likes from Twitter via Bird      |
-| `bun run sync:all`                                       | Sync all available pages (bookmarks + likes)      |
-| `bun run export:obsidian -- --bookmarks-only --count=20` | Export recent tweets directly into Obsidian inbox |
-| `bun run import <file>`                                  | Import tweets from JSON export                    |
-| `bun run health`                                         | Show read-only backlog, sync, and cron health     |
-| `bun run process:backlog`                                | Drain more pending embeddings locally             |
-| `bun run mcp`                                            | Run MCP server standalone                         |
-| `bun run smoke:mcp`                                      | Validate MCP startup and env wiring               |
-| `bun run typecheck`                                      | TypeScript type checking                          |
-| `bun run test`                                           | Run regression tests                              |
-| `bun run verify`                                         | Run typecheck, build, and tests                   |
+| Command                   | Description                                   |
+| ------------------------- | --------------------------------------------- |
+| `bun run sync`            | Sync bookmarks + likes from Twitter via Bird  |
+| `bun run sync:all`        | Sync all available pages (bookmarks + likes)  |
+| `bun run import <file>`   | Import tweets from JSON export                |
+| `bun run health`          | Show read-only backlog, sync, and cron health |
+| `bun run process:backlog` | Drain more pending embeddings locally         |
+| `bun run mcp`             | Run MCP server standalone                     |
+| `bun run smoke:mcp`       | Validate MCP startup and env wiring           |
+| `bun run typecheck`       | TypeScript type checking                      |
+| `bun run test`            | Run regression tests                          |
+| `bun run verify`          | Run typecheck, build, and tests               |
 
 ## Environment Variables
 
@@ -267,7 +249,7 @@ curl -X POST "https://your-project.supabase.co/functions/v1/process-tweets" \
 
 ## Obsidian Brain Integration
 
-Supabase Tweet Vault is the cloud enrichment/search layer. The Obsidian bookmark vault remains the durable markdown/canon layer. `bun run export:obsidian` writes v1.1 frontmatter with `vault_enrichment` metadata so downstream bookmark validators and promotion workflows can connect notes back to Tweet Vault.
+Supabase Tweet Vault is the cloud enrichment/search layer. The Obsidian bookmark vault remains the durable markdown/canon layer. Bookmarks reach Obsidian through the vault's `/bookmark <url>` skill (manual, or via the `bookmark-supabase-sync` Hermes cron job if registered), which enriches from Tweet Vault (`get_tweet`/`find_related`) and writes v1.1 frontmatter so downstream bookmark validators and promotion workflows can connect notes back to Tweet Vault.
 
 ## Verification
 
