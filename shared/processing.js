@@ -1,6 +1,9 @@
 export const EMBEDDING_PROVIDER_OPENAI = "openai";
+export const EMBEDDING_PROVIDER_OPENROUTER = "openrouter";
 export const EMBEDDING_PROVIDER_GEMINI = "gemini";
 export const EMBEDDING_MODEL = "text-embedding-3-small";
+export const OPENROUTER_EMBEDDING_MODEL = "openai/text-embedding-3-small";
+export const DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 export const GEMINI_EMBEDDING_MODEL = "gemini-embedding-001";
 export const EMBEDDING_DIMENSIONS = 1536;
 export const DEFAULT_MAX_INPUT_CHARS = 8000;
@@ -167,18 +170,144 @@ export function clampEmbeddingInput(text, maxInputChars = DEFAULT_MAX_INPUT_CHAR
   return text.slice(0, maxInputChars);
 }
 
-export function getEmbeddingProviderMetadata(provider = EMBEDDING_PROVIDER_OPENAI) {
-  const normalizedProvider =
-    provider === EMBEDDING_PROVIDER_GEMINI
-      ? EMBEDDING_PROVIDER_GEMINI
-      : EMBEDDING_PROVIDER_OPENAI;
+const EMBEDDING_PROVIDER_NAMES = new Set([
+  EMBEDDING_PROVIDER_OPENAI,
+  EMBEDDING_PROVIDER_OPENROUTER,
+  EMBEDDING_PROVIDER_GEMINI,
+]);
+
+function hasValue(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+export function getConfiguredEmbeddingProviderName(env = {}) {
+  const configuredProvider = env.EMBEDDING_PROVIDER?.trim().toLowerCase();
+  if (configuredProvider) {
+    if (!EMBEDDING_PROVIDER_NAMES.has(configuredProvider)) {
+      throw new Error(
+        `Unsupported EMBEDDING_PROVIDER "${configuredProvider}". Use openrouter, openai, or gemini.`,
+      );
+    }
+    return configuredProvider;
+  }
+
+  // OpenRouter is the default route for the OpenAI model using OpenRouter credits.
+  // Direct OpenAI remains a deliberate fallback when no OpenRouter key exists.
+  if (hasValue(env.OPENROUTER_API_KEY)) return EMBEDDING_PROVIDER_OPENROUTER;
+  if (hasValue(env.OPENAI_API_KEY)) return EMBEDDING_PROVIDER_OPENAI;
+  return undefined;
+}
+
+export function getEmbeddingProviderConfig(env = {}) {
+  const provider = getConfiguredEmbeddingProviderName(env);
+  if (!provider) {
+    throw new Error(
+      "OPENROUTER_API_KEY or OPENAI_API_KEY must be configured (set EMBEDDING_PROVIDER=gemini to opt into Gemini explicitly)",
+    );
+  }
+
+  if (provider === EMBEDDING_PROVIDER_OPENROUTER) {
+    if (!hasValue(env.OPENROUTER_API_KEY)) {
+      throw new Error("OPENROUTER_API_KEY is missing or empty");
+    }
+    return {
+      name: EMBEDDING_PROVIDER_OPENROUTER,
+      model: OPENROUTER_EMBEDDING_MODEL,
+      dimensions: EMBEDDING_DIMENSIONS,
+      apiKey: env.OPENROUTER_API_KEY,
+      baseUrl: env.OPENROUTER_BASE_URL || DEFAULT_OPENROUTER_BASE_URL,
+    };
+  }
+
+  if (provider === EMBEDDING_PROVIDER_OPENAI) {
+    if (!hasValue(env.OPENAI_API_KEY)) {
+      throw new Error("OPENAI_API_KEY is missing or empty");
+    }
+    return {
+      name: EMBEDDING_PROVIDER_OPENAI,
+      model: EMBEDDING_MODEL,
+      dimensions: EMBEDDING_DIMENSIONS,
+      apiKey: env.OPENAI_API_KEY,
+      baseUrl: env.OPENAI_BASE_URL || "https://api.openai.com/v1",
+    };
+  }
+
+  const apiKey = env.GOOGLE_API_KEY || env.GEMINI_API_KEY;
+  if (!hasValue(apiKey)) {
+    throw new Error("GOOGLE_API_KEY or GEMINI_API_KEY is missing or empty");
+  }
+  return {
+    name: EMBEDDING_PROVIDER_GEMINI,
+    model: GEMINI_EMBEDDING_MODEL,
+    dimensions: EMBEDDING_DIMENSIONS,
+    apiKey,
+  };
+}
+
+export function requestOpenAICompatibleEmbeddings(input, config) {
+  const inputs = Array.isArray(input) ? input : [input];
+  const baseUrl = String(config.baseUrl || "").replace(/\/$/, "");
+  return fetch(`${baseUrl}/embeddings`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${config.apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: config.model,
+      input: inputs,
+      dimensions: config.dimensions,
+    }),
+  }).then(async (response) => {
+    const bodyText = await response.text();
+    if (!response.ok) {
+      throw new Error(
+        `${config.name} embedding API error: ${response.status} ${bodyText.slice(0, 300)}`,
+      );
+    }
+
+    let body;
+    try {
+      body = JSON.parse(bodyText);
+    } catch {
+      throw new Error(`${config.name} embedding API returned invalid JSON`);
+    }
+
+    const embeddings = Array.isArray(body?.data)
+      ? body.data
+          .slice()
+          .sort((left, right) => (left?.index ?? 0) - (right?.index ?? 0))
+          .map((item) => item?.embedding)
+      : [];
+    if (
+      embeddings.length !== inputs.length ||
+      embeddings.some(
+        (embedding) =>
+          !Array.isArray(embedding) || embedding.length !== config.dimensions,
+      )
+    ) {
+      throw new Error(
+        `${config.name} returned an unexpected embedding shape for ${inputs.length} input(s)`,
+      );
+    }
+
+    return embeddings;
+  });
+}
+
+export function getEmbeddingProviderMetadata(provider = EMBEDDING_PROVIDER_OPENROUTER) {
+  const normalizedProvider = EMBEDDING_PROVIDER_NAMES.has(provider)
+    ? provider
+    : EMBEDDING_PROVIDER_OPENROUTER;
 
   return {
     provider: normalizedProvider,
     model:
-      normalizedProvider === EMBEDDING_PROVIDER_GEMINI
-        ? GEMINI_EMBEDDING_MODEL
-        : EMBEDDING_MODEL,
+      normalizedProvider === EMBEDDING_PROVIDER_OPENROUTER
+        ? OPENROUTER_EMBEDDING_MODEL
+        : normalizedProvider === EMBEDDING_PROVIDER_GEMINI
+          ? GEMINI_EMBEDDING_MODEL
+          : EMBEDDING_MODEL,
     dimensions: EMBEDDING_DIMENSIONS,
     max_input_chars: DEFAULT_MAX_INPUT_CHARS,
     retries: DEFAULT_EMBEDDING_RETRIES,

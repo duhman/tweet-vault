@@ -1,7 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import {
-  EMBEDDING_DIMENSIONS,
-  EMBEDDING_MODEL,
+  getConfiguredEmbeddingProviderName,
   getEmbeddingProviderMetadata,
 } from "../../shared/processing.js";
 import { getStats, getSupabaseClient } from "./supabase.js";
@@ -134,11 +133,9 @@ export async function getVaultHealth(options: {
   return {
     generated_at: new Date().toISOString(),
     schema,
-    embedding: {
-      ...getEmbeddingProviderMetadata(),
-      model: EMBEDDING_MODEL,
-      dimensions: EMBEDDING_DIMENSIONS,
-    },
+    embedding: getEmbeddingProviderMetadata(
+      getConfiguredEmbeddingProviderName(process.env),
+    ),
     totals: {
       tweets: stats.total_tweets,
       links: stats.total_links,

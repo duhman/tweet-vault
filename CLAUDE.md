@@ -102,13 +102,15 @@ Cron schedules contain project-specific function URLs and invocation headers. Ap
 | ----------------------------------- | ------------------------------------------ |
 | `SUPABASE_URL`                      | `https://brawengrbiuvnmsyqhoe.supabase.co` |
 | `SUPABASE_SERVICE_ROLE_KEY`         | Database access for CLI sync               |
-| `GOOGLE_API_KEY` / `GEMINI_API_KEY` | Preferred Gemini embedding key             |
-| `OPENAI_API_KEY`                    | Fallback embedding key                     |
+| `OPENROUTER_API_KEY`               | OpenRouter key for `openai/text-embedding-3-small` |
+| `OPENAI_API_KEY`                    | Optional direct OpenAI embedding fallback |
+| `EMBEDDING_PROVIDER`                | Optional explicit provider (`openrouter`, `openai`, or `gemini`) |
 
 ### Supabase Edge Function (Dashboard → Edge Functions → Secrets)
 
-- `GOOGLE_API_KEY` / `GEMINI_API_KEY` - Preferred Gemini embedding key
-- `OPENAI_API_KEY` - Fallback embedding key when no Google/Gemini key is set
+- `OPENROUTER_API_KEY` - OpenRouter key for `openai/text-embedding-3-small`
+- `OPENAI_API_KEY` - Optional direct OpenAI fallback
+- `EMBEDDING_PROVIDER` - Optional explicit provider; Gemini requires `gemini` plus its key
 
 ### MCP Server (configured in MCP client configs)
 
@@ -116,8 +118,9 @@ Cron schedules contain project-specific function URLs and invocation headers. Ap
 | ----------------------------------- | ------------------------------------------ |
 | `SUPABASE_URL`                      | `https://brawengrbiuvnmsyqhoe.supabase.co` |
 | `SUPABASE_SERVICE_ROLE_KEY`         | `${PRIVATEBASE_SERVICE_ROLE_KEY}`          |
-| `GOOGLE_API_KEY` / `GEMINI_API_KEY` | Preferred local/project embedding key      |
-| `OPENAI_API_KEY`                    | Optional fallback embedding key            |
+| `OPENROUTER_API_KEY`               | OpenRouter embedding key                   |
+| `OPENAI_API_KEY`                    | Optional direct OpenAI fallback            |
+| `EMBEDDING_PROVIDER`                | Optional explicit provider                 |
 | `SUPABASE_SCHEMA` (optional)        | `tweet_vault` (default)                    |
 
 ## Common Tasks
@@ -154,12 +157,16 @@ bun run test
 bun run smoke:mcp
 ```
 
+When changing embedding providers, run `bun run process -- --reembed-all`
+against the vault before relying on semantic search. Existing vectors are not
+provider-tagged, so they must not be mixed across embedding spaces.
+
 ## Tech Stack
 
 - **Runtime**: Bun 1.2+
 - **Database**: Supabase Cloud (pgvector with HNSW indexes)
 - **Processing**: Supabase Edge Functions (Deno) + pg_cron
-- **Embeddings**: Gemini `gemini-embedding-001` preferred; OpenAI `text-embedding-3-small` fallback; both 1536d
+- **Embeddings**: OpenRouter `openai/text-embedding-3-small` by default; direct OpenAI fallback; both 1536d
 - **Twitter Integration**: @steipete/bird (GraphQL API via Safari cookies)
 - **MCP**: @modelcontextprotocol/sdk
 - **Validation**: Zod

@@ -9,6 +9,7 @@ import { processAllEmbeddings } from "./process/embeddings.js";
 import { formatVaultHealth, getVaultHealth } from "./utils/health.js";
 import { getStats, recordSync, upsertTweetInteractions } from "./utils/supabase.js";
 import { getEmbeddingProviderMetadata } from "../shared/processing.js";
+import { getEmbeddingProvider } from "../shared/embedding-provider.js";
 
 // Load environment variables (override: true ensures project .env wins
 // over stale shell exports like SUPABASE_SCHEMA=star_vault)
@@ -69,6 +70,7 @@ async function importFromFile(filePath: string): Promise<void> {
 
   // Generate embeddings
   console.log("Generating embeddings...");
+  const embeddingProvider = getEmbeddingProvider();
   const embeddingResult = await processAllEmbeddings(3);
   console.log(
     `Embedded ${embeddingResult.tweets.processed} tweets, ${embeddingResult.links.processed} links`,
@@ -85,8 +87,8 @@ async function importFromFile(filePath: string): Promise<void> {
     metadata: {
       function_name: "manual-import",
       schema: process.env.SUPABASE_SCHEMA || "tweet_vault",
-      embedding: getEmbeddingProviderMetadata("openai"),
-      provider: "openai",
+      embedding: getEmbeddingProviderMetadata(embeddingProvider.name),
+      provider: embeddingProvider.name,
       fetched_count: data.length,
       source_file: filePath,
       imported_items: data.length,
@@ -163,11 +165,14 @@ async function processCommand(command: string, args: string[]): Promise<void> {
 
     case "process":
       console.log("Processing pending embeddings...");
+      const reembedAll = args.includes("--reembed-all");
       const result = await processAllEmbeddings({
         concurrency: readNumberOption(args, "concurrency") ?? 3,
-        maxRounds: readNumberOption(args, "max-rounds") ?? 10,
+        maxRounds:
+          readNumberOption(args, "max-rounds") ?? (reembedAll ? 1000 : 10),
         batchSize: readNumberOption(args, "batch-size"),
         embedBatchSize: readNumberOption(args, "embed-batch-size"),
+        reembedAll,
       });
       console.log(
         `Embedded ${result.tweets.processed} tweets, ${result.links.processed} links`,
@@ -204,6 +209,7 @@ Commands:
   process             Generate embeddings for pending tweets/links
   process --max-rounds=50
                       Drain more of the local embedding backlog
+  process --reembed-all  Rewrite all existing tweet/link embeddings with the configured provider
   fetch-links         Fetch metadata for unfetched links
   stats               Show vault statistics
   health              Show read-only processing, cron, and backlog health
@@ -212,7 +218,9 @@ Commands:
 Environment Variables:
   SUPABASE_URL              Supabase project URL
   SUPABASE_SERVICE_ROLE_KEY Supabase service role key
-  OPENAI_API_KEY            OpenAI API key for embeddings
+  OPENROUTER_API_KEY        OpenRouter API key for openai/text-embedding-3-small
+  OPENAI_API_KEY            Direct OpenAI embedding API key (fallback)
+  EMBEDDING_PROVIDER        Optional explicit provider: openrouter, openai, or gemini
       `);
   }
 }

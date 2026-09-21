@@ -412,14 +412,18 @@ export async function getStats(): Promise<TweetVaultStats> {
 
 export async function getTweetsWithoutEmbeddings(
   limit: number,
+  options: { includeExisting?: boolean; offset?: number } = {},
 ): Promise<Tweet[]> {
   const supabase = getSupabaseClient();
 
-  const { data, error } = await supabase
+  let query = supabase
     .from("tweets")
     .select("*")
-    .is("embedding", null)
-    .limit(limit);
+    .order("id", { ascending: true })
+    .range(options.offset ?? 0, (options.offset ?? 0) + limit - 1);
+  if (!options.includeExisting) query = query.is("embedding", null);
+
+  const { data, error } = await query;
 
   if (error) throw error;
   return (data ?? []).map((row: any) => ({
@@ -440,13 +444,25 @@ export async function getTweetsWithoutEmbeddings(
 
 export async function getLinksWithoutEmbeddings(
   limit: number,
+  options: { includeExisting?: boolean; offset?: number } = {},
 ): Promise<Link[]> {
   const supabase = getSupabaseClient();
 
-  const { data, error } = await supabase
+  let query = supabase
     .from("links")
     .select("*")
-    .limit(Math.max(limit * 3, limit));
+    .order("id", { ascending: true })
+    .range(
+      options.offset ?? 0,
+      (options.offset ?? 0) + limit - 1,
+    );
+  if (options.includeExisting) {
+    query = query.not("title", "is", null);
+  } else {
+    query = query.not("title", "is", null).is("embedding", null);
+  }
+
+  const { data, error } = await query;
 
   if (error) throw error;
   return (data ?? [])
@@ -462,7 +478,9 @@ export async function getLinksWithoutEmbeddings(
       og_image: row.og_image ?? undefined,
       embedding: row.embedding ?? undefined,
     }))
-    .filter((row: any) => isLinkReadyForEmbedding(row))
+    .filter((row: any) =>
+      options.includeExisting ? Boolean(row.title) : isLinkReadyForEmbedding(row),
+    )
     .slice(0, limit);
 }
 

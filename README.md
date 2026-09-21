@@ -11,7 +11,7 @@ Tweet Vault makes your Twitter/X bookmarks and likes searchable with natural lan
 - 🤖 **Claude MCP Integration** — Query bookmarks + likes directly from Claude
 - 🐦 **Bird CLI Integration** — Sync bookmarks and likes automatically from Twitter
 - ⏰ **Daily Processing** — Syncs new tweets and drains enrichment backlog via Supabase pg_cron or local backlog commands
-- 🧠 **Smart Embeddings** — Gemini `gemini-embedding-001` or OpenAI `text-embedding-3-small` with 1536 dimensions
+- 🧠 **Smart Embeddings** — OpenRouter `openai/text-embedding-3-small` (1536 dimensions), with direct OpenAI fallback
 - ⚡ **Fast Vector Search** — pgvector with HNSW indexes
 
 ## Architecture
@@ -43,7 +43,7 @@ Tweet Vault makes your Twitter/X bookmarks and likes searchable with natural lan
 
 - [Bun](https://bun.sh) 1.2+
 - [Supabase](https://supabase.com) project with pgvector extension
-- Google/Gemini API key for embeddings, or OpenAI as fallback
+- OpenRouter API key for `openai/text-embedding-3-small` (or direct OpenAI as fallback)
 - Twitter/X account with bookmarks/likes
 
 ### Installation
@@ -70,7 +70,7 @@ cp .env.example .env
 ```bash
 supabase functions deploy tweet-vault-sync --project-ref <your-project-ref>
 supabase functions deploy process-tweets --project-ref <your-project-ref>
-supabase secrets set GOOGLE_API_KEY="<your-key>" --project-ref <your-project-ref>
+supabase secrets set OPENROUTER_API_KEY="<your-key>" --project-ref <your-project-ref>
 ```
 
 Cron schedules contain project-specific function URLs and invocation headers. Do not commit rendered schedules; apply them from `supabase/templates/tweet-vault-cron.sql` with private deployment credentials.
@@ -114,7 +114,7 @@ Add to your Claude MCP configuration (`~/.claude.json` or Claude Desktop setting
       "env": {
         "SUPABASE_URL": "https://your-project.supabase.co",
         "SUPABASE_SERVICE_ROLE_KEY": "your-service-role-key",
-        "GOOGLE_API_KEY": "your-google-key"
+        "OPENROUTER_API_KEY": "your-openrouter-key"
       }
     }
   }
@@ -171,6 +171,7 @@ Once configured, ask Claude things like:
 | `bun run import <file>`   | Import tweets from JSON export                |
 | `bun run health`          | Show read-only backlog, sync, and cron health |
 | `bun run process:backlog` | Drain more pending embeddings locally         |
+| `bun run process -- --reembed-all` | Rewrite existing embeddings with the configured provider |
 | `bun run mcp`             | Run MCP server standalone                     |
 | `bun run smoke:mcp`       | Validate MCP startup and env wiring           |
 | `bun run typecheck`       | TypeScript type checking                      |
@@ -185,16 +186,18 @@ Once configured, ask Claude things like:
 | ----------------------------------- | --------- | -------------------------------------------------------------- |
 | `SUPABASE_URL`                      | Yes       | Supabase project URL                                           |
 | `SUPABASE_SERVICE_ROLE_KEY`         | Yes       | Supabase service role key                                      |
-| `GOOGLE_API_KEY` / `GEMINI_API_KEY` | Preferred | Gemini API key for embeddings                                  |
-| `OPENAI_API_KEY`                    | Fallback  | OpenAI API key for embeddings when no Google/Gemini key is set |
+| `OPENROUTER_API_KEY`                | Preferred | OpenRouter key for `openai/text-embedding-3-small`             |
+| `OPENAI_API_KEY`                    | Fallback  | Direct OpenAI embedding API key                                |
+| `EMBEDDING_PROVIDER`                | No        | Explicit provider: `openrouter`, `openai`, or `gemini`         |
 | `SUPABASE_SCHEMA`                   | No        | Schema name (default: `tweet_vault`)                           |
 
 ### Edge Function (Supabase Dashboard)
 
 | Variable                            | Description                                             |
 | ----------------------------------- | ------------------------------------------------------- |
-| `GOOGLE_API_KEY` / `GEMINI_API_KEY` | Preferred Gemini embedding key                          |
-| `OPENAI_API_KEY`                    | Fallback embedding key when no Google/Gemini key is set |
+| `OPENROUTER_API_KEY`                | OpenRouter key for `openai/text-embedding-3-small`      |
+| `OPENAI_API_KEY`                    | Direct OpenAI fallback                                   |
+| `EMBEDDING_PROVIDER`                | Optional explicit provider                              |
 
 ## Database Schema
 
@@ -221,7 +224,12 @@ Once configured, ask Claude things like:
 4. **Store** — Upsert to Supabase
 5. **Extract Links** — Parse URLs from tweet content (Edge Function)
 6. **Fetch Metadata** — GET each URL, extract og:title, og:description
-7. **Generate Embeddings** — Gemini preferred, OpenAI fallback, both 1536d
+7. **Generate Embeddings** — OpenRouter `openai/text-embedding-3-small` by default, direct OpenAI fallback, both 1536d
+
+When changing embedding providers, run `bun run process -- --reembed-all`
+against the vault before relying on semantic search. The command is explicit
+because existing vectors are not provider-tagged and must not be mixed with
+vectors from a different embedding space.
 
 ## Automated Processing
 
@@ -270,7 +278,7 @@ For the current live deployment state, cron topology, and security-hardening ver
 - **Language**: TypeScript 5.7
 - **Database**: [Supabase](https://supabase.com) (PostgreSQL + pgvector)
 - **Processing**: Supabase Edge Functions (Deno) + pg_cron
-- **Embeddings**: Gemini `gemini-embedding-001` preferred; OpenAI `text-embedding-3-small` fallback; both 1536d
+- **Embeddings**: OpenRouter `openai/text-embedding-3-small` by default; direct OpenAI fallback; both 1536d
 - **Vector Index**: pgvector HNSW
 - **Validation**: [Zod](https://zod.dev)
 - **MCP**: [@modelcontextprotocol/sdk](https://github.com/modelcontextprotocol/sdk)

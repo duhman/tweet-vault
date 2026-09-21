@@ -20,6 +20,7 @@ import {
   fetchAllLinkMetadata,
 } from "../src/process/links.js";
 import { processAllEmbeddings } from "../src/process/embeddings.js";
+import { getEmbeddingProvider } from "../shared/embedding-provider.js";
 import {
   recordSync,
   upsertTweetInteractions,
@@ -310,6 +311,9 @@ export async function main() {
     tweets: { processed: 0, failed: 0 },
     links: { processed: 0, failed: 0 },
   };
+  const embeddingProvider = options.skipEmbeddings
+    ? null
+    : getEmbeddingProvider();
   if (!options.skipEmbeddings) {
     console.log("Step 5/5: Generating embeddings...");
     embeddingResult = await processAllEmbeddings({
@@ -339,8 +343,10 @@ export async function main() {
     metadata: {
       function_name: "sync-from-bird",
       schema: process.env.SUPABASE_SCHEMA || "tweet_vault",
-      embedding: getEmbeddingProviderMetadata("openai"),
-      provider: "openai",
+      embedding: embeddingProvider
+        ? getEmbeddingProviderMetadata(embeddingProvider.name)
+        : null,
+      provider: embeddingProvider?.name ?? "not-run",
       fetched_count: allTweets.length,
       fetched_total: allTweets.length,
       fetched_bookmarks: bookmarks?.tweets.length ?? 0,

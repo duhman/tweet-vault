@@ -4,6 +4,20 @@ Last verified: 2026-06-26
 
 Tweet Vault is live in Supabase project `brawengrbiuvnmsyqhoe` (`Privatebase`) with schema `tweet_vault`.
 
+## Provider migration note (2026-09-21)
+
+The repository now targets OpenRouter's OpenAI-compatible
+`openai/text-embedding-3-small` route by default (`OPENROUTER_API_KEY`), with
+the existing 1536-dimensional schema unchanged. The deployment snapshots and
+Gemini results below are historical; this change has not been deployed from
+this session. Existing vectors must be re-embedded before mixing them with the
+new provider's vectors.
+
+The repository provides the explicit local migration command
+`bun run process -- --reembed-all`; run it with the OpenRouter key configured,
+verify the backlog is clear, and only then switch the deployed query and
+processing paths.
+
 ## Deployed Functions
 
 | Function           | Status | Verified version |

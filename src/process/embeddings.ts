@@ -19,6 +19,7 @@ interface EmbeddingOptions {
   embedBatchSize?: number;
   maxRounds?: number;
   maxInputChars?: number;
+  reembedAll?: boolean;
 }
 
 async function sleep(ms: number): Promise<void> {
@@ -55,8 +56,13 @@ async function processTweetEmbeddings(
   batchSize: number,
   embedBatchSize: number,
   maxInputChars: number,
+  reembedAll: boolean,
+  offset: number,
 ): Promise<{ processed: number; failed: number }> {
-  const tweets = await getTweetsWithoutEmbeddings(batchSize);
+  const tweets = await getTweetsWithoutEmbeddings(batchSize, {
+    includeExisting: reembedAll,
+    offset,
+  });
   if (tweets.length === 0) return { processed: 0, failed: 0 };
 
   let processed = 0;
@@ -95,8 +101,13 @@ async function processLinkEmbeddings(
   batchSize: number,
   embedBatchSize: number,
   maxInputChars: number,
+  reembedAll: boolean,
+  offset: number,
 ): Promise<{ processed: number; failed: number }> {
-  const links = await getLinksWithoutEmbeddings(batchSize);
+  const links = await getLinksWithoutEmbeddings(batchSize, {
+    includeExisting: reembedAll,
+    offset,
+  });
   if (links.length === 0) return { processed: 0, failed: 0 };
 
   let processed = 0;
@@ -149,6 +160,10 @@ export async function processAllEmbeddings(
     options.embedBatchSize ?? Math.min(20, concurrency * 5),
   );
   const maxRounds = Math.max(1, options.maxRounds ?? 10);
+  const reembedAll = options.reembedAll ?? false;
+  const effectiveMaxRounds = reembedAll
+    ? Math.max(maxRounds, options.maxRounds === undefined ? 1000 : maxRounds)
+    : maxRounds;
   const maxInputChars = Math.max(
     500,
     options.maxInputChars ?? DEFAULT_MAX_INPUT_CHARS,
@@ -157,11 +172,13 @@ export async function processAllEmbeddings(
   const tweetStats = { processed: 0, failed: 0 };
   const linkStats = { processed: 0, failed: 0 };
 
-  for (let round = 0; round < maxRounds; round += 1) {
+  for (let round = 0; round < effectiveMaxRounds; round += 1) {
     const result = await processTweetEmbeddings(
       batchSize,
       embedBatchSize,
       maxInputChars,
+      reembedAll,
+      reembedAll ? round * batchSize : 0,
     );
     tweetStats.processed += result.processed;
     tweetStats.failed += result.failed;
@@ -169,11 +186,13 @@ export async function processAllEmbeddings(
     if (result.processed === 0) break;
   }
 
-  for (let round = 0; round < maxRounds; round += 1) {
+  for (let round = 0; round < effectiveMaxRounds; round += 1) {
     const result = await processLinkEmbeddings(
       batchSize,
       embedBatchSize,
       maxInputChars,
+      reembedAll,
+      reembedAll ? round * batchSize : 0,
     );
     linkStats.processed += result.processed;
     linkStats.failed += result.failed;

@@ -6,6 +6,8 @@ import {
   createTweetEmbeddingText,
   extractMetadataFromHtml,
   fetchLinkMetadataWithStrategy,
+  getEmbeddingProviderConfig,
+  requestOpenAICompatibleEmbeddings,
   selectLinksForMetadataProcessing,
 } from "../shared/processing.js";
 
@@ -96,4 +98,87 @@ test("builds stable embedding text", () => {
   );
 
   assert.equal(clampEmbeddingInput("x".repeat(9000), 8000).length, 8000);
+});
+
+test("resolves OpenRouter as the default OpenAI-compatible route", () => {
+  const config = getEmbeddingProviderConfig({
+    OPENROUTER_API_KEY: "test-openrouter-key",
+    OPENAI_API_KEY: "test-openai-key",
+  });
+
+  assert.deepEqual(
+    {
+      name: config.name,
+      model: config.model,
+      dimensions: config.dimensions,
+      baseUrl: config.baseUrl,
+    },
+    {
+      name: "openrouter",
+      model: "openai/text-embedding-3-small",
+      dimensions: 1536,
+      baseUrl: "https://openrouter.ai/api/v1",
+    },
+  );
+});
+
+test("requests and validates OpenRouter-compatible embeddings", async () => {
+  const originalFetch = globalThis.fetch;
+  let request:
+    | {
+        url: string;
+        body: Record<string, unknown>;
+        authorization: string | null;
+      }
+    | undefined;
+  globalThis.fetch = (async (input, init) => {
+    const headers = new Headers(init?.headers);
+    request = {
+      url: String(input),
+      body: JSON.parse(String(init?.body)),
+      authorization: headers.get("authorization"),
+    };
+    return new Response(
+      JSON.stringify({ data: [{ index: 0, embedding: Array(1536).fill(0.25) }] }),
+      { headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+
+  try {
+    const [embedding] = await requestOpenAICompatibleEmbeddings(
+      "hello",
+      getEmbeddingProviderConfig({ OPENROUTER_API_KEY: "test-key" }),
+    );
+    assert.equal(embedding.length, 1536);
+    assert.equal(request?.url, "https://openrouter.ai/api/v1/embeddings");
+    assert.equal(request?.authorization, "Bearer test-key");
+    assert.deepEqual(request?.body, {
+      model: "openai/text-embedding-3-small",
+      input: ["hello"],
+      dimensions: 1536,
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("rejects an OpenRouter response with the wrong vector dimensions", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({ data: [{ embedding: [0, 1] }] }),
+      { headers: { "content-type": "application/json" } },
+    )) as typeof fetch;
+
+  try {
+    await assert.rejects(
+      requestOpenAICompatibleEmbeddings(
+        "hello",
+        getEmbeddingProviderConfig({ OPENROUTER_API_KEY: "test-key" }),
+      ),
+      /unexpected embedding shape/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

@@ -4,6 +4,7 @@ import {
   EMBEDDING_DIMENSIONS,
   EMBEDDING_MODEL,
   GEMINI_EMBEDDING_MODEL,
+  OPENROUTER_EMBEDDING_MODEL,
   getEmbeddingProviderMetadata,
 } from "../shared/processing.js";
 import { formatVaultHealth, type VaultHealth } from "../src/utils/health.js";
@@ -11,6 +12,9 @@ import { formatVaultHealth, type VaultHealth } from "../src/utils/health.js";
 test("embedding provider metadata keeps vector dimensions stable", () => {
   assert.equal(EMBEDDING_MODEL, "text-embedding-3-small");
   assert.equal(EMBEDDING_DIMENSIONS, 1536);
+
+  assert.equal(getEmbeddingProviderMetadata().model, OPENROUTER_EMBEDDING_MODEL);
+  assert.equal(getEmbeddingProviderMetadata().provider, "openrouter");
 
   assert.deepEqual(getEmbeddingProviderMetadata("openai"), {
     provider: "openai",

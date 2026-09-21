@@ -3,9 +3,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.47.0";
 import {
   EMBEDDING_DIMENSIONS,
-  EMBEDDING_MODEL,
   EMBEDDING_PROVIDER_GEMINI,
-  EMBEDDING_PROVIDER_OPENAI,
   DEFAULT_MAX_INPUT_CHARS,
   DEFAULT_METADATA_RETRY_COOLDOWN_HOURS,
   GEMINI_EMBEDDING_MODEL,
@@ -13,8 +11,10 @@ import {
   createLinkEmbeddingText,
   createTweetEmbeddingText,
   fetchLinkMetadataWithStrategy,
+  getEmbeddingProviderConfig,
   getEmbeddingProviderMetadata,
   isLinkReadyForEmbedding,
+  requestOpenAICompatibleEmbeddings,
   selectLinksForMetadataProcessing,
 } from "../../../shared/processing.js";
 
@@ -58,13 +58,12 @@ async function withRetry<T>(fn: () => Promise<T>, retries = 3): Promise<T> {
 
 async function generateEmbedding(
   text: string,
-  openaiKey: string | null,
-  geminiKey: string | null,
+  embeddingConfig: ReturnType<typeof getEmbeddingProviderConfig>,
 ): Promise<number[]> {
   const input = clampEmbeddingInput(text, DEFAULT_MAX_INPUT_CHARS);
-  if (geminiKey) {
+  if (embeddingConfig.name === EMBEDDING_PROVIDER_GEMINI) {
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_EMBEDDING_MODEL}:embedContent?key=${geminiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_EMBEDDING_MODEL}:embedContent?key=${embeddingConfig.apiKey}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -88,29 +87,11 @@ async function generateEmbedding(
     return embedding;
   }
 
-  if (!openaiKey) {
-    throw new Error("OPENAI_API_KEY or GOOGLE_API_KEY/GEMINI_API_KEY must be configured");
-  }
-
-  const response = await fetch("https://api.openai.com/v1/embeddings", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${openaiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: EMBEDDING_MODEL,
-      input,
-    }),
-  });
-
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`OpenAI API error: ${error}`);
-  }
-
-  const data = await response.json();
-  return data.data[0].embedding;
+  const [embedding] = await requestOpenAICompatibleEmbeddings(
+    input,
+    embeddingConfig,
+  );
+  return embedding;
 }
 
 Deno.serve(async (req) => {
@@ -129,18 +110,23 @@ Deno.serve(async (req) => {
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-    const openaiKey = Deno.env.get("OPENAI_API_KEY") || null;
-    const geminiKey = Deno.env.get("GOOGLE_API_KEY") || Deno.env.get("GEMINI_API_KEY") || null;
-    const embeddingProvider = geminiKey
-      ? EMBEDDING_PROVIDER_GEMINI
-      : EMBEDDING_PROVIDER_OPENAI;
+    const embeddingConfig = getEmbeddingProviderConfig({
+      EMBEDDING_PROVIDER: Deno.env.get("EMBEDDING_PROVIDER") || undefined,
+      OPENROUTER_API_KEY: Deno.env.get("OPENROUTER_API_KEY") || undefined,
+      OPENROUTER_BASE_URL: Deno.env.get("OPENROUTER_BASE_URL") || undefined,
+      OPENAI_API_KEY: Deno.env.get("OPENAI_API_KEY") || undefined,
+      OPENAI_BASE_URL: Deno.env.get("OPENAI_BASE_URL") || undefined,
+      GOOGLE_API_KEY: Deno.env.get("GOOGLE_API_KEY") || undefined,
+      GEMINI_API_KEY: Deno.env.get("GEMINI_API_KEY") || undefined,
+    });
+    const embeddingProvider = embeddingConfig.name;
     const embeddingMetadata = getEmbeddingProviderMetadata(embeddingProvider);
 
-    if (!supabaseUrl || !supabaseKey || (!openaiKey && !geminiKey)) {
+    if (!supabaseUrl || !supabaseKey) {
       return new Response(
         JSON.stringify({
           error:
-            "SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, and either OPENAI_API_KEY or GOOGLE_API_KEY/GEMINI_API_KEY must all be configured",
+            "SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, and an embedding provider key must all be configured",
         }),
         {
           status: 500,
@@ -173,7 +159,7 @@ Deno.serve(async (req) => {
       for (const tweet of tweetsToEmbed ?? []) {
         try {
           const text = createTweetEmbeddingText(tweet);
-          const embedding = await withRetry(() => generateEmbedding(text, openaiKey, geminiKey));
+          const embedding = await withRetry(() => generateEmbedding(text, embeddingConfig));
 
           const { error: updateError } = await supabase
             .from("tweets")
@@ -265,7 +251,7 @@ Deno.serve(async (req) => {
       for (const link of (linkEmbeddingCandidates ?? []).filter(isLinkReadyForEmbedding).slice(0, 10)) {
         try {
           const text = createLinkEmbeddingText(link);
-          const embedding = await withRetry(() => generateEmbedding(text, openaiKey, geminiKey));
+          const embedding = await withRetry(() => generateEmbedding(text, embeddingConfig));
 
           const { error: updateError } = await supabase
             .from("links")

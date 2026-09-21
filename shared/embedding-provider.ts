@@ -1,14 +1,18 @@
 import OpenAI from "openai";
 import {
   EMBEDDING_DIMENSIONS,
-  EMBEDDING_MODEL,
   EMBEDDING_PROVIDER_GEMINI,
   EMBEDDING_PROVIDER_OPENAI,
+  EMBEDDING_PROVIDER_OPENROUTER,
   GEMINI_EMBEDDING_MODEL,
+  getConfiguredEmbeddingProviderName,
+  getEmbeddingProviderConfig,
 } from "./processing.js";
 
 export type EmbeddingProviderName =
-  typeof EMBEDDING_PROVIDER_OPENAI | typeof EMBEDDING_PROVIDER_GEMINI;
+  | typeof EMBEDDING_PROVIDER_OPENAI
+  | typeof EMBEDDING_PROVIDER_OPENROUTER
+  | typeof EMBEDDING_PROVIDER_GEMINI;
 
 export type EmbeddingProvider = {
   name: EmbeddingProviderName;
@@ -17,16 +21,39 @@ export type EmbeddingProvider = {
   embed(texts: string[]): Promise<number[][]>;
 };
 
-let openaiClient: OpenAI | null = null;
+const openaiClients = new Map<string, OpenAI>();
 
-function getOpenAIClient(apiKey: string): OpenAI {
-  if (openaiClient) return openaiClient;
-  openaiClient = new OpenAI({ apiKey });
-  return openaiClient;
+function hasEnvValue(value: string | undefined): boolean {
+  return Boolean(value?.trim());
 }
 
-function getGoogleKey(env: NodeJS.ProcessEnv): string | undefined {
-  return env.GOOGLE_API_KEY || env.GEMINI_API_KEY;
+function getOpenAIClient(apiKey: string, baseURL: string): OpenAI {
+  const cacheKey = `${baseURL}\u0000${apiKey}`;
+  const cached = openaiClients.get(cacheKey);
+  if (cached) return cached;
+
+  const client = new OpenAI({ apiKey, baseURL });
+  openaiClients.set(cacheKey, client);
+  return client;
+}
+
+function validateEmbeddings(
+  embeddings: number[][],
+  expectedCount: number,
+  provider: string,
+): number[][] {
+  if (
+    embeddings.length !== expectedCount ||
+    embeddings.some(
+      (embedding) =>
+        !Array.isArray(embedding) || embedding.length !== EMBEDDING_DIMENSIONS,
+    )
+  ) {
+    throw new Error(
+      `${provider} returned an unexpected embedding shape for ${expectedCount} input(s)`,
+    );
+  }
+  return embeddings;
 }
 
 async function embedWithGemini(
@@ -57,46 +84,42 @@ async function embedWithGemini(
     embeddings?: Array<{ values?: number[] }>;
   };
   const embeddings = (body.embeddings ?? []).map((item) => item.values ?? []);
-
-  if (embeddings.length !== texts.length) {
-    throw new Error(
-      `Gemini returned ${embeddings.length} vectors for ${texts.length} inputs`,
-    );
-  }
-
-  return embeddings;
+  return validateEmbeddings(embeddings, texts.length, "Gemini");
 }
 
 export function getEmbeddingProvider(
   env: NodeJS.ProcessEnv = process.env,
 ): EmbeddingProvider {
-  const googleKey = getGoogleKey(env);
-  if (googleKey) {
+  const config = getEmbeddingProviderConfig(env);
+
+  if (config.name === EMBEDDING_PROVIDER_GEMINI) {
     return {
       name: EMBEDDING_PROVIDER_GEMINI,
       model: GEMINI_EMBEDDING_MODEL,
       dimensions: EMBEDDING_DIMENSIONS,
-      embed: (texts) => embedWithGemini(texts, googleKey),
+      embed: (texts) => embedWithGemini(texts, config.apiKey),
     };
   }
 
-  const openaiKey = env.OPENAI_API_KEY;
-  if (!openaiKey) {
-    throw new Error(
-      "OPENAI_API_KEY or GOOGLE_API_KEY/GEMINI_API_KEY environment variable is missing or empty",
-    );
-  }
+  const model = config.model;
+  const providerName = config.name as EmbeddingProviderName;
+  const client = getOpenAIClient(config.apiKey, config.baseUrl);
 
   return {
-    name: EMBEDDING_PROVIDER_OPENAI,
-    model: EMBEDDING_MODEL,
+    name: providerName,
+    model,
     dimensions: EMBEDDING_DIMENSIONS,
     embed: async (texts) => {
-      const response = await getOpenAIClient(openaiKey).embeddings.create({
-        model: EMBEDDING_MODEL,
+      const response = await client.embeddings.create({
+        model,
         input: texts,
+        dimensions: EMBEDDING_DIMENSIONS,
       });
-      return response.data.map((item) => item.embedding);
+      const embeddings = response.data
+        .slice()
+        .sort((left, right) => (left.index ?? 0) - (right.index ?? 0))
+        .map((item) => item.embedding);
+      return validateEmbeddings(embeddings, texts.length, config.name);
     },
   };
 }
@@ -104,7 +127,34 @@ export function getEmbeddingProvider(
 export function getMissingEmbeddingEnvVars(
   env: NodeJS.ProcessEnv = process.env,
 ): string[] {
-  return env.OPENAI_API_KEY || getGoogleKey(env)
-    ? []
-    : ["OPENAI_API_KEY or GOOGLE_API_KEY/GEMINI_API_KEY"];
+  let provider: string | undefined;
+  try {
+    provider = getConfiguredEmbeddingProviderName(env);
+  } catch (error) {
+    return [error instanceof Error ? error.message : "Invalid EMBEDDING_PROVIDER"];
+  }
+
+  if (!provider) {
+    return [
+      "OPENROUTER_API_KEY or OPENAI_API_KEY (or EMBEDDING_PROVIDER=gemini with GOOGLE_API_KEY/GEMINI_API_KEY)",
+    ];
+  }
+
+  if (
+    provider === EMBEDDING_PROVIDER_OPENROUTER &&
+    !hasEnvValue(env.OPENROUTER_API_KEY)
+  ) {
+    return ["OPENROUTER_API_KEY"];
+  }
+  if (provider === EMBEDDING_PROVIDER_OPENAI && !hasEnvValue(env.OPENAI_API_KEY)) {
+    return ["OPENAI_API_KEY"];
+  }
+  if (
+    provider === EMBEDDING_PROVIDER_GEMINI &&
+    !hasEnvValue(env.GOOGLE_API_KEY) &&
+    !hasEnvValue(env.GEMINI_API_KEY)
+  ) {
+    return ["GOOGLE_API_KEY or GEMINI_API_KEY"];
+  }
+  return [];
 }
