@@ -146,6 +146,50 @@ async function getClient(): Promise<TwitterClient> {
   return new TwitterClient({ cookies });
 }
 
+type CurrentUserResult = {
+  success: boolean;
+  user?: { id: string; username: string; name: string };
+  error?: string;
+};
+
+export function userIdFromSetCookie(setCookies: string[]): string | null {
+  for (const cookie of setCookies) {
+    const match = /^\s*twid="?u(?:%3D|=)(\d+)/.exec(cookie);
+    if (match) return match[1];
+  }
+  return null;
+}
+
+// X answers an authenticated page request with a `twid=u=<user id>` cookie;
+// a request without a valid session gets no such cookie.
+async function userIdFromSession(client: TwitterClient): Promise<string | null> {
+  const c = client as any;
+  const response = await c.fetchWithTimeout("https://x.com/home", {
+    headers: { cookie: c.cookieHeader, "user-agent": c.userAgent },
+  });
+  return userIdFromSetCookie(response.headers.getSetCookie?.() ?? []);
+}
+
+// From 2026-11-17 every account endpoint the bird library's getCurrentUser
+// tries returns 404, although the session still fetches bookmarks. The
+// library's likes fetch calls getCurrentUser for the user id, so when the
+// lookup fails, take the id from the session cookie and serve it from then on.
+export async function resolveCurrentUser(
+  client: { getCurrentUser: () => Promise<CurrentUserResult> },
+  sessionUserId: () => Promise<string | null>,
+): Promise<CurrentUserResult> {
+  const result = await client.getCurrentUser();
+  if (result.success && result.user) return result;
+  const id = await sessionUserId();
+  if (!id) return result;
+  const fallback = {
+    success: true,
+    user: { id, username: `id:${id}`, name: `id:${id}` },
+  };
+  client.getCurrentUser = async () => fallback;
+  return fallback;
+}
+
 function toExportedTweet(tweet: TweetData): object {
   return {
     id: tweet.id,
@@ -209,7 +253,10 @@ export async function main() {
   let client: TwitterClient;
   try {
     client = await getClient();
-    const user = await client.getCurrentUser();
+    const sessionClient = client;
+    const user = await resolveCurrentUser(client as any, () =>
+      userIdFromSession(sessionClient),
+    );
     if (!user.success || !user.user) {
       throw new Error("Could not authenticate with Twitter");
     }
