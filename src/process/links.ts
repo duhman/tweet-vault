@@ -13,6 +13,7 @@ import {
 
 export async function extractLinksFromTweets(
   tweets: Tweet[],
+  client?: unknown,
 ): Promise<{ inserted: number; skipped: number }> {
   let skipped = 0;
   const linkBatch: Array<{
@@ -51,7 +52,7 @@ export async function extractLinksFromTweets(
     }
   }
 
-  const result = await upsertLinks(linkBatch);
+  const result = await upsertLinks(linkBatch, client);
   return { inserted: result.inserted, skipped };
 }
 

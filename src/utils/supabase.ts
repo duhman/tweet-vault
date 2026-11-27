@@ -70,8 +70,9 @@ export interface TweetVaultStats {
   last_sync: string | null;
 }
 
-// A sync sends up to 100 tweets. As one statement that ran past the database
-// statement timeout (SQLSTATE 57014) and failed the whole sync. Measured on
+// A default sync sends up to 100 tweets (50 bookmarks and 50 likes); --count
+// and --all send more. Sent as one statement, a default sync ran past the
+// database statement timeout (SQLSTATE 57014) and failed. Measured on
 // 2026-11-27: a statement updating 25 existing tweets took 3.6 s, one
 // inserting 25 new tweets 0.2 s.
 const TWEET_CHUNK_SIZE = 25;
@@ -136,7 +137,7 @@ export function getSupabaseClient(): any {
 
 async function getExistingTweetIds(
   tweetIds: string[],
-  supabase: any = getSupabaseClient(),
+  supabase: any,
 ): Promise<Set<string>> {
   const existing = new Set<string>();
 
@@ -155,13 +156,18 @@ async function getExistingTweetIds(
   return existing;
 }
 
+// The writers below take the client as an optional last argument so tests can
+// pass a stub. It is resolved after the empty-input return, so an empty call
+// needs no credentials.
 export async function upsertTweets(
   tweets: Tweet[],
-  supabase: any = getSupabaseClient(),
+  client?: any,
 ): Promise<{ added: string[]; updated: string[] }> {
   if (tweets.length === 0) {
     return { added: [], updated: [] };
   }
+
+  const supabase = client ?? getSupabaseClient();
 
   const deduped = new Map<string, Tweet>();
   for (const tweet of tweets) {
@@ -197,12 +203,13 @@ export async function upsertTweets(
 
 export async function upsertLinks(
   links: Link[],
+  client?: any,
 ): Promise<{ inserted: number; updated: number }> {
   if (links.length === 0) {
     return { inserted: 0, updated: 0 };
   }
 
-  const supabase = getSupabaseClient();
+  const supabase = client ?? getSupabaseClient();
   let inserted = 0;
   let updated = 0;
 
@@ -253,12 +260,13 @@ export async function upsertLinks(
 
 export async function upsertTweetInteractions(
   interactions: TweetInteraction[],
+  client?: any,
 ): Promise<{ inserted: number; updated: number }> {
   if (interactions.length === 0) {
     return { inserted: 0, updated: 0 };
   }
 
-  const supabase = getSupabaseClient();
+  const supabase = client ?? getSupabaseClient();
   const deduped = new Map<string, TweetInteraction>();
   for (const interaction of interactions) {
     deduped.set(
@@ -269,7 +277,7 @@ export async function upsertTweetInteractions(
 
   const normalized = [...deduped.values()];
   const tweetIds = [...new Set(normalized.map((item) => item.tweet_id))];
-  const existingTweets = await getExistingTweetIds(tweetIds);
+  const existingTweets = await getExistingTweetIds(tweetIds, supabase);
   const filtered = normalized.filter((item) => existingTweets.has(item.tweet_id));
 
   if (filtered.length === 0) {

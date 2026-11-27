@@ -218,6 +218,7 @@ function trimUrl(url: string): string {
  */
 export async function processTweets(
   tweets: unknown[],
+  client?: unknown,
 ): Promise<{ added: Tweet[]; skipped: number }> {
   const parsedTweets: Tweet[] = [];
   let skipped = 0;
@@ -243,7 +244,7 @@ export async function processTweets(
   }
 
   // Upsert to database
-  const { added: addedIds } = await upsertTweets(parsedTweets);
+  const { added: addedIds } = await upsertTweets(parsedTweets, client);
   const addedSet = new Set(addedIds);
   const added = parsedTweets.filter((tweet) => addedSet.has(tweet.tweet_id));
   skipped += parsedTweets.length - added.length;
