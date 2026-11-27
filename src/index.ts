@@ -7,7 +7,11 @@ import {
 } from "./process/links.js";
 import { processAllEmbeddings } from "./process/embeddings.js";
 import { formatVaultHealth, getVaultHealth } from "./utils/health.js";
-import { getStats, recordSync, upsertTweetInteractions } from "./utils/supabase.js";
+import {
+  getStats,
+  insertMissingTweetInteractions,
+  recordSync,
+} from "./utils/supabase.js";
 import { getEmbeddingProviderMetadata } from "../shared/processing.js";
 import { getEmbeddingProvider } from "../shared/embedding-provider.js";
 
@@ -38,25 +42,21 @@ async function importFromFile(filePath: string): Promise<void> {
   console.log(`Found ${data.length} tweets to process`);
 
   // Process tweets
-  const { added, skipped } = await processTweets(data);
-  console.log(
-    `Added ${added.length} new tweets, skipped ${skipped} duplicates`,
-  );
+  const { tweets, added, skipped } = await processTweets(data);
+  console.log(`Added ${added} new tweets, skipped ${skipped} duplicates`);
 
-  if (added.length > 0) {
-    await upsertTweetInteractions(
-      added.map((tweet) => ({
-        tweet_id: tweet.tweet_id,
-        interaction_type: "bookmark",
-        interaction_at: tweet.created_at,
-        source: "manual-import",
-      })),
-    );
-  }
+  await insertMissingTweetInteractions(
+    tweets.map((tweet) => ({
+      tweet_id: tweet.tweet_id,
+      interaction_type: "bookmark",
+      interaction_at: tweet.created_at,
+      source: "manual-import",
+    })),
+  );
 
   // Extract links
   console.log("Extracting links from tweets...");
-  const linkResult = await extractLinksFromTweets(added);
+  const linkResult = await extractLinksFromTweets(tweets);
   console.log(
     `Inserted ${linkResult.inserted} links, skipped ${linkResult.skipped}`,
   );
@@ -79,7 +79,7 @@ async function importFromFile(filePath: string): Promise<void> {
   // Record sync
   await recordSync({
     last_sync_at: new Date().toISOString(),
-    tweets_added: added.length,
+    tweets_added: added,
     links_processed: linkResult.inserted,
     embeddings_generated:
       embeddingResult.tweets.processed + embeddingResult.links.processed,

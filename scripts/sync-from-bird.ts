@@ -307,7 +307,7 @@ export async function main() {
   const transformed = [...byId.values()].map(toExportedTweet);
 
   console.log("Step 2/5: Upserting canonical tweets + interactions...");
-  const { added, skipped } = await processTweets(transformed);
+  const { tweets, added, skipped } = await processTweets(transformed);
 
   const bookmarks = timelineResults.find((result) => result.kind === "bookmark");
   const likes = timelineResults.find((result) => result.kind === "like");
@@ -333,14 +333,14 @@ export async function main() {
     ...likeInteractions,
   ]);
 
-  console.log(`  ✅ Canonical tweets added: ${added.length}`);
+  console.log(`  ✅ Canonical tweets added: ${added}`);
   console.log(`  ⏭️  Tweets updated/skipped: ${skipped}`);
   console.log(
     `  ✅ Interactions inserted: ${interactionResult.inserted}, updated: ${interactionResult.updated}\n`,
   );
 
-  console.log("Step 3/5: Extracting links from newly added tweets...");
-  const linkResult = await extractLinksFromTweets(added);
+  console.log("Step 3/5: Extracting links not stored yet...");
+  const linkResult = await extractLinksFromTweets(tweets);
   console.log(`  ✅ Links inserted: ${linkResult.inserted}`);
   console.log(`  ⏭️  Links skipped: ${linkResult.skipped}\n`);
 
@@ -382,7 +382,7 @@ export async function main() {
 
   await recordSync({
     last_sync_at: new Date().toISOString(),
-    tweets_added: added.length,
+    tweets_added: added,
     links_processed: linkResult.inserted,
     embeddings_generated:
       embeddingResult.tweets.processed + embeddingResult.links.processed,
@@ -417,7 +417,7 @@ export async function main() {
 
   console.log("\n🎉 Sync complete!");
   console.log(
-    `   Added ${added.length} tweets, processed ${bookmarkInteractions.length + likeInteractions.length} interactions`,
+    `   Added ${added} tweets, processed ${bookmarkInteractions.length + likeInteractions.length} interactions`,
   );
 }
 

@@ -13,7 +13,10 @@ import {
   fetchAllLinkMetadata,
 } from "../src/process/links.js";
 import { processAllEmbeddings } from "../src/process/embeddings.js";
-import { recordSync, upsertTweetInteractions } from "../src/utils/supabase.js";
+import {
+  insertMissingTweetInteractions,
+  recordSync,
+} from "../src/utils/supabase.js";
 import { fileURLToPath } from "url";
 
 // override: true ensures project .env wins over stale shell exports
@@ -63,32 +66,30 @@ export async function main() {
 
   // Step 1: Process tweets
   console.log("Step 1/4: Processing tweets...");
-  const { added, skipped } = await processTweets(data);
-  console.log(`  ✅ Added ${added.length} new tweets`);
+  const { tweets, added, skipped } = await processTweets(data);
+  console.log(`  ✅ Added ${added} new tweets`);
   console.log(`  ⏭️  Skipped ${skipped} duplicates\n`);
 
-  if (added.length > 0) {
-    const interactions = await upsertTweetInteractions(
-      added.map((tweet) => ({
-        tweet_id: tweet.tweet_id,
-        interaction_type: "bookmark",
-        interaction_at: tweet.created_at,
-        source: "manual-import",
-      })),
-    );
-    console.log(
-      `  ✅ Bookmark interactions inserted: ${interactions.inserted}, updated: ${interactions.updated}\n`,
-    );
-  }
-
-  if (added.length === 0) {
-    console.log("No new tweets to process. Exiting.");
+  if (tweets.length === 0) {
+    console.log("No tweets to process. Exiting.");
     return;
   }
 
+  const interactions = await insertMissingTweetInteractions(
+    tweets.map((tweet) => ({
+      tweet_id: tweet.tweet_id,
+      interaction_type: "bookmark",
+      interaction_at: tweet.created_at,
+      source: "manual-import",
+    })),
+  );
+  console.log(
+    `  ✅ Bookmark interactions inserted: ${interactions.inserted}\n`,
+  );
+
   // Step 2: Extract links
   console.log("Step 2/4: Extracting links from tweets...");
-  const linkResult = await extractLinksFromTweets(added);
+  const linkResult = await extractLinksFromTweets(tweets);
   console.log(`  ✅ Inserted ${linkResult.inserted} links`);
   console.log(`  ⏭️  Skipped ${linkResult.skipped} (duplicates or filtered)\n`);
 
@@ -114,7 +115,7 @@ export async function main() {
   // Record sync
   await recordSync({
     last_sync_at: new Date().toISOString(),
-    tweets_added: added.length,
+    tweets_added: added,
     links_processed: linkResult.inserted,
     embeddings_generated:
       embeddingResult.tweets.processed + embeddingResult.links.processed,

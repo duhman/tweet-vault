@@ -213,13 +213,17 @@ function trimUrl(url: string): string {
 }
 
 /**
- * Process a batch of exported tweets
- * Deduplicates against existing tweets in database
+ * Parse a batch of exported tweets and store them.
+ *
+ * Returns every stored tweet in `tweets` and the number of new ones in
+ * `added`. Links and interactions are written for `tweets`: after a run that
+ * failed partway, the tweets it stored are no longer new, and they still need
+ * those rows.
  */
 export async function processTweets(
   tweets: unknown[],
   client?: unknown,
-): Promise<{ added: Tweet[]; skipped: number }> {
+): Promise<{ tweets: Tweet[]; added: number; skipped: number }> {
   const parsedTweets: Tweet[] = [];
   let skipped = 0;
 
@@ -240,13 +244,10 @@ export async function processTweets(
   }
 
   if (parsedTweets.length === 0) {
-    return { added: [], skipped };
+    return { tweets: [], added: 0, skipped };
   }
 
-  // Upsert to database
-  const { added: addedIds } = await upsertTweets(parsedTweets, client);
-  const addedSet = new Set(addedIds);
-  const added = parsedTweets.filter((tweet) => addedSet.has(tweet.tweet_id));
+  const { added } = await upsertTweets(parsedTweets, client);
   skipped += parsedTweets.length - added.length;
-  return { added, skipped };
+  return { tweets: parsedTweets, added: added.length, skipped };
 }

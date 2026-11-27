@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  upsertLinks,
+  insertMissingLinks,
+  insertMissingTweetInteractions,
   upsertTweetInteractions,
   upsertTweets,
   type Link,
@@ -125,7 +126,7 @@ test("sends at most 25 tweets per statement", async () => {
 test("retries a timed-out link batch as two halves", async () => {
   const stub = stubClient({ links: [STATEMENT_TIMEOUT] });
 
-  const result = await upsertLinks(links(25), stub.client);
+  const result = await insertMissingLinks(links(25), stub.client);
 
   assert.deepEqual(stub.calls, [
     "links.select",
@@ -134,7 +135,7 @@ test("retries a timed-out link batch as two halves", async () => {
     "links.upsert:12",
   ]);
   assert.equal(stub.tables.links.size, 25);
-  assert.equal(result.inserted, 25);
+  assert.deepEqual(result, { inserted: 25 });
 });
 
 test("retries a timed-out interaction batch as two halves", async () => {
@@ -157,7 +158,8 @@ test("retries a timed-out interaction batch as two halves", async () => {
 
 test("empty input needs no client", async () => {
   assert.deepEqual(await upsertTweets([]), { added: [], updated: [] });
-  assert.deepEqual(await upsertLinks([]), { inserted: 0, updated: 0 });
+  assert.deepEqual(await insertMissingLinks([]), { inserted: 0 });
+  assert.deepEqual(await insertMissingTweetInteractions([]), { inserted: 0 });
   assert.deepEqual(await upsertTweetInteractions([]), {
     inserted: 0,
     updated: 0,

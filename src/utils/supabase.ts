@@ -201,17 +201,19 @@ export async function upsertTweets(
   return { added, updated };
 }
 
-export async function upsertLinks(
+// Stores the links that are not stored yet and leaves stored links as they
+// are, so it can be given every tweet of a run: a link that an earlier, failed
+// run did not reach is added, and nothing else is written.
+export async function insertMissingLinks(
   links: Link[],
   client?: any,
-): Promise<{ inserted: number; updated: number }> {
+): Promise<{ inserted: number }> {
   if (links.length === 0) {
-    return { inserted: 0, updated: 0 };
+    return { inserted: 0 };
   }
 
   const supabase = client ?? getSupabaseClient();
   let inserted = 0;
-  let updated = 0;
 
   const deduped = new Map<string, Link>();
   for (const link of links) {
@@ -235,14 +237,12 @@ export async function upsertLinks(
       ),
     );
 
-    inserted += linkChunk.filter(
+    const missing = linkChunk.filter(
       (link) => !existingKeys.has(`${link.tweet_id}::${link.url}`),
-    ).length;
-    updated += linkChunk.filter((link) =>
-      existingKeys.has(`${link.tweet_id}::${link.url}`),
-    ).length;
+    );
+    inserted += missing.length;
 
-    const payload = linkChunk.map((link) => ({
+    const payload = missing.map((link) => ({
       tweet_id: link.tweet_id,
       url: link.url,
       expanded_url: link.expanded_url ?? null,
@@ -251,15 +251,19 @@ export async function upsertLinks(
     }));
 
     await writeInBatches("links", payload, LINK_CHUNK_SIZE, (batch) =>
-      supabase.from("links").upsert(batch, { onConflict: "tweet_id,url" }),
+      supabase.from("links").upsert(batch, {
+        onConflict: "tweet_id,url",
+        ignoreDuplicates: true,
+      }),
     );
   }
 
-  return { inserted, updated };
+  return { inserted };
 }
 
-export async function upsertTweetInteractions(
+async function writeTweetInteractions(
   interactions: TweetInteraction[],
+  refreshStored: boolean,
   client?: any,
 ): Promise<{ inserted: number; updated: number }> {
   if (interactions.length === 0) {
@@ -303,15 +307,15 @@ export async function upsertTweetInteractions(
       ),
     );
 
-    inserted += interactionChunk.filter(
+    const missing = interactionChunk.filter(
       (item) =>
         !existingKeys.has(`${item.tweet_id}::${item.interaction_type}`),
-    ).length;
-    updated += interactionChunk.filter((item) =>
-      existingKeys.has(`${item.tweet_id}::${item.interaction_type}`),
-    ).length;
+    );
+    inserted += missing.length;
+    if (refreshStored) updated += interactionChunk.length - missing.length;
 
-    const payload = interactionChunk.map((interaction) => ({
+    const rows = refreshStored ? interactionChunk : missing;
+    const payload = rows.map((interaction) => ({
       tweet_id: interaction.tweet_id,
       interaction_type: interaction.interaction_type,
       interaction_at: interaction.interaction_at ?? null,
@@ -325,13 +329,32 @@ export async function upsertTweetInteractions(
       payload,
       INTERACTION_CHUNK_SIZE,
       (batch) =>
-        supabase
-          .from("tweet_interactions")
-          .upsert(batch, { onConflict: "tweet_id,interaction_type" }),
+        supabase.from("tweet_interactions").upsert(batch, {
+          onConflict: "tweet_id,interaction_type",
+          ignoreDuplicates: !refreshStored,
+        }),
     );
   }
 
   return { inserted, updated };
+}
+
+// Writes every interaction and refreshes the ones already stored.
+export async function upsertTweetInteractions(
+  interactions: TweetInteraction[],
+  client?: any,
+): Promise<{ inserted: number; updated: number }> {
+  return writeTweetInteractions(interactions, true, client);
+}
+
+// Stores the interactions that are not stored yet and leaves stored ones as
+// they are, source and metadata included.
+export async function insertMissingTweetInteractions(
+  interactions: TweetInteraction[],
+  client?: any,
+): Promise<{ inserted: number }> {
+  const { inserted } = await writeTweetInteractions(interactions, false, client);
+  return { inserted };
 }
 
 export async function recordSync(state: SyncStateInput): Promise<void> {
