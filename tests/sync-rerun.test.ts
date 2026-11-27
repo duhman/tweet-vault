@@ -184,3 +184,68 @@ test("import adds the bookmark for a stored tweet that has none", async () => {
     "manual-import",
   );
 });
+
+// A tweet read with entity data yields the t.co url plus its target. The same
+// tweet read from text alone yields only the url written in the text. Both
+// orders are covered, for both callers.
+const TARGET = "https://example.com/article";
+const SHORT = "https://t.co/abc123";
+
+for (const [name, run] of [
+  ["sync", syncRun],
+  ["import", importRun],
+] as const) {
+  test(`${name}: a link stored under its t.co url is not added again from the text`, async () => {
+    const stub = stubClient();
+    await run(
+      [
+        {
+          id: "1",
+          author: { username: "alice" },
+          text: `read ${SHORT}`,
+          raw: {
+            legacy: {
+              entities: { urls: [{ url: SHORT, expanded_url: TARGET }] },
+            },
+          },
+        },
+      ],
+      stub,
+    );
+    assert.deepEqual([...stub.tables.links.keys()], [`1::${SHORT}`]);
+
+    await run(
+      [{ id: "1", author: { username: "alice" }, text: `read ${TARGET}` }],
+      stub,
+    );
+
+    assert.deepEqual([...stub.tables.links.keys()], [`1::${SHORT}`]);
+  });
+
+  test(`${name}: a link stored from the text is not added again under its t.co url`, async () => {
+    const stub = stubClient();
+    await run(
+      [{ id: "1", author: { username: "alice" }, text: `read ${TARGET}` }],
+      stub,
+    );
+    assert.deepEqual([...stub.tables.links.keys()], [`1::${TARGET}`]);
+
+    await run(
+      [
+        {
+          id: "1",
+          author: { username: "alice" },
+          text: `read ${SHORT}`,
+          raw: {
+            legacy: {
+              entities: { urls: [{ url: SHORT, expanded_url: TARGET }] },
+            },
+          },
+        },
+      ],
+      stub,
+    );
+
+    assert.deepEqual([...stub.tables.links.keys()], [`1::${TARGET}`]);
+  });
+}

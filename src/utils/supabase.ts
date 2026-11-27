@@ -203,7 +203,8 @@ export async function upsertTweets(
 
 // Stores the links that are not stored yet and leaves stored links as they
 // are, so it can be given every tweet of a run: a link that an earlier, failed
-// run did not reach is added, and nothing else is written.
+// run did not reach is added, and nothing else is written. Urls are compared
+// as written: no case, slash or query normalising.
 export async function insertMissingLinks(
   links: Link[],
   client?: any,
@@ -226,19 +227,26 @@ export async function insertMissingLinks(
     const tweetIds = [...new Set(linkChunk.map((link) => link.tweet_id))];
     const { data: existingRows, error: existingError } = await supabase
       .from("links")
-      .select("tweet_id,url")
+      .select("tweet_id,url,expanded_url")
       .in("tweet_id", tweetIds);
 
     if (existingError) throw existingError;
 
-    const existingKeys = new Set<string>(
-      (existingRows ?? []).map((row: { tweet_id: string; url: string }) =>
-        `${row.tweet_id}::${row.url}`,
-      ),
-    );
+    // A link is stored when a stored row of the tweet has its url or its
+    // target (expanded_url when present, else url). A tweet read with entity
+    // data yields the t.co url plus the target, and the same tweet read from
+    // text alone yields only the url written in the text, so comparing urls
+    // alone would store one link twice.
+    const storedKeys = new Set<string>();
+    for (const row of (existingRows ?? []) as Link[]) {
+      storedKeys.add(`${row.tweet_id}::${row.url}`);
+      storedKeys.add(`${row.tweet_id}::${row.expanded_url ?? row.url}`);
+    }
 
     const missing = linkChunk.filter(
-      (link) => !existingKeys.has(`${link.tweet_id}::${link.url}`),
+      (link) =>
+        !storedKeys.has(`${link.tweet_id}::${link.url}`) &&
+        !storedKeys.has(`${link.tweet_id}::${link.expanded_url ?? link.url}`),
     );
     inserted += missing.length;
 
