@@ -39,6 +39,11 @@ function likes(count: number): TweetInteraction[] {
   }));
 }
 
+test("runs without Supabase credentials", () => {
+  assert.equal(process.env.SUPABASE_URL, undefined);
+  assert.equal(process.env.SUPABASE_SERVICE_ROLE_KEY, undefined);
+});
+
 test("retries a timed-out tweet batch as two halves", async () => {
   const stub = stubClient({ tweets: [STATEMENT_TIMEOUT] });
 
