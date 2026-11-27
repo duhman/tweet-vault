@@ -1,6 +1,7 @@
 import {
   Tweet,
-  upsertLinks,
+  WriteClient,
+  insertMissingLinks,
   getLinksWithoutMetadata,
   updateLinkMetadata,
 } from "../utils/supabase.js";
@@ -11,8 +12,12 @@ import {
   shouldSkipLinkDomain,
 } from "../../shared/processing.js";
 
+// Extracts the links of the given tweets and stores the ones not stored yet.
+// Callers pass every tweet of a run, not only the tweets that run added: a
+// tweet stored by an earlier run that failed before this step has no links.
 export async function extractLinksFromTweets(
   tweets: Tweet[],
+  client?: WriteClient,
 ): Promise<{ inserted: number; skipped: number }> {
   let skipped = 0;
   const linkBatch: Array<{
@@ -51,7 +56,7 @@ export async function extractLinksFromTweets(
     }
   }
 
-  const result = await upsertLinks(linkBatch);
+  const result = await insertMissingLinks(linkBatch, client);
   return { inserted: result.inserted, skipped };
 }
 

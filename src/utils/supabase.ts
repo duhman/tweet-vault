@@ -70,9 +70,15 @@ export interface TweetVaultStats {
   last_sync: string | null;
 }
 
-const TWEET_CHUNK_SIZE = 200;
+// A default sync sends up to 100 tweets (50 bookmarks and 50 likes); --count
+// and --all send more. Sent as one statement, a default sync ran past the
+// database statement timeout (SQLSTATE 57014) and failed. Measured on
+// 2026-11-27: a statement updating 25 existing tweets took 3.6 s, one
+// inserting 25 new tweets 0.2 s.
+const TWEET_CHUNK_SIZE = 25;
 const LINK_CHUNK_SIZE = 200;
 const INTERACTION_CHUNK_SIZE = 500;
+const STATEMENT_TIMEOUT = "57014";
 let supabaseClient: any = null;
 
 function chunk<T>(items: T[], size: number): T[][] {
@@ -81,6 +87,32 @@ function chunk<T>(items: T[], size: number): T[][] {
     result.push(items.slice(i, i + size));
   }
   return result;
+}
+
+// Writes rows in statements of at most `size` rows. A statement the database
+// cancels for running too long wrote nothing, so its rows are retried as two
+// halves, down to a single row. Any other error, and a timeout on a single
+// row, is thrown.
+async function writeInBatches<T>(
+  label: string,
+  rows: T[],
+  size: number,
+  write: (batch: T[]) => PromiseLike<{ error: any }>,
+): Promise<void> {
+  const pending = chunk(rows, size);
+
+  while (pending.length > 0) {
+    const batch = pending.shift() as T[];
+    const { error } = await write(batch);
+    if (!error) continue;
+    if (error.code !== STATEMENT_TIMEOUT || batch.length === 1) throw error;
+
+    const half = Math.ceil(batch.length / 2);
+    console.warn(
+      `  ⚠️  ${label}: statement timeout on ${batch.length} rows, retrying as ${half} + ${batch.length - half}`,
+    );
+    pending.unshift(batch.slice(0, half), batch.slice(half));
+  }
 }
 
 export function getSupabaseClient(): any {
@@ -103,8 +135,10 @@ export function getSupabaseClient(): any {
   return supabaseClient;
 }
 
-async function getExistingTweetIds(tweetIds: string[]): Promise<Set<string>> {
-  const supabase = getSupabaseClient();
+async function getExistingTweetIds(
+  tweetIds: string[],
+  supabase: WriteClient,
+): Promise<Set<string>> {
   const existing = new Set<string>();
 
   for (const idChunk of chunk(tweetIds, INTERACTION_CHUNK_SIZE)) {
@@ -122,14 +156,22 @@ async function getExistingTweetIds(tweetIds: string[]): Promise<Set<string>> {
   return existing;
 }
 
+// The part of the Supabase client the writers use.
+export type WriteClient = { from(table: string): any };
+
+// The writers below take the client as an optional last argument so tests can
+// pass a stub. It is resolved after the empty-input return, so an empty call
+// needs no credentials.
 export async function upsertTweets(
   tweets: Tweet[],
+  client?: WriteClient,
 ): Promise<{ added: string[]; updated: string[] }> {
   if (tweets.length === 0) {
     return { added: [], updated: [] };
   }
 
-  const supabase = getSupabaseClient();
+  const supabase = client ?? getSupabaseClient();
+
   const deduped = new Map<string, Tweet>();
   for (const tweet of tweets) {
     deduped.set(tweet.tweet_id, tweet);
@@ -137,45 +179,45 @@ export async function upsertTweets(
 
   const normalizedTweets = [...deduped.values()];
   const tweetIds = normalizedTweets.map((tweet) => tweet.tweet_id);
-  const existingBefore = await getExistingTweetIds(tweetIds);
+  const existingBefore = await getExistingTweetIds(tweetIds, supabase);
   const now = new Date().toISOString();
 
-  for (const tweetChunk of chunk(normalizedTweets, TWEET_CHUNK_SIZE)) {
-    const payload = tweetChunk.map((tweet) => ({
-      tweet_id: tweet.tweet_id,
-      author_username: tweet.author_username,
-      author_name: tweet.author_name ?? null,
-      author_profile_image: tweet.author_profile_image ?? null,
-      content: tweet.content,
-      created_at: tweet.created_at ?? null,
-      media_urls: tweet.media_urls ?? null,
-      metrics: tweet.metrics ?? null,
-      raw_data: tweet.raw_data ?? null,
-      fetched_at: tweet.fetched_at ?? now,
-    }));
+  const payload = normalizedTweets.map((tweet) => ({
+    tweet_id: tweet.tweet_id,
+    author_username: tweet.author_username,
+    author_name: tweet.author_name ?? null,
+    author_profile_image: tweet.author_profile_image ?? null,
+    content: tweet.content,
+    created_at: tweet.created_at ?? null,
+    media_urls: tweet.media_urls ?? null,
+    metrics: tweet.metrics ?? null,
+    raw_data: tweet.raw_data ?? null,
+    fetched_at: tweet.fetched_at ?? now,
+  }));
 
-    const { error } = await supabase
-      .from("tweets")
-      .upsert(payload, { onConflict: "tweet_id" });
-
-    if (error) throw error;
-  }
+  await writeInBatches("tweets", payload, TWEET_CHUNK_SIZE, (batch) =>
+    supabase.from("tweets").upsert(batch, { onConflict: "tweet_id" }),
+  );
 
   const added = tweetIds.filter((id) => !existingBefore.has(id));
   const updated = tweetIds.filter((id) => existingBefore.has(id));
   return { added, updated };
 }
 
-export async function upsertLinks(
+// Stores the links that are not stored yet and leaves stored links as they
+// are, so it can be given every tweet of a run: a link that an earlier, failed
+// run did not reach is added, and nothing else is written. Urls are compared
+// as written: no case, slash or query normalising.
+export async function insertMissingLinks(
   links: Link[],
-): Promise<{ inserted: number; updated: number }> {
+  client?: WriteClient,
+): Promise<{ inserted: number }> {
   if (links.length === 0) {
-    return { inserted: 0, updated: 0 };
+    return { inserted: 0 };
   }
 
-  const supabase = getSupabaseClient();
+  const supabase = client ?? getSupabaseClient();
   let inserted = 0;
-  let updated = 0;
 
   const deduped = new Map<string, Link>();
   for (const link of links) {
@@ -188,25 +230,30 @@ export async function upsertLinks(
     const tweetIds = [...new Set(linkChunk.map((link) => link.tweet_id))];
     const { data: existingRows, error: existingError } = await supabase
       .from("links")
-      .select("tweet_id,url")
+      .select("tweet_id,url,expanded_url")
       .in("tweet_id", tweetIds);
 
     if (existingError) throw existingError;
 
-    const existingKeys = new Set<string>(
-      (existingRows ?? []).map((row: { tweet_id: string; url: string }) =>
-        `${row.tweet_id}::${row.url}`,
-      ),
+    // A link is stored when a stored row of the tweet has its url or its
+    // target (expanded_url when present, else url). A tweet read with entity
+    // data yields the t.co url plus the target, and the same tweet read from
+    // text alone yields only the url written in the text, so comparing urls
+    // alone would store one link twice.
+    const storedKeys = new Set<string>();
+    for (const row of (existingRows ?? []) as Link[]) {
+      storedKeys.add(`${row.tweet_id}::${row.url}`);
+      storedKeys.add(`${row.tweet_id}::${row.expanded_url ?? row.url}`);
+    }
+
+    const missing = linkChunk.filter(
+      (link) =>
+        !storedKeys.has(`${link.tweet_id}::${link.url}`) &&
+        !storedKeys.has(`${link.tweet_id}::${link.expanded_url ?? link.url}`),
     );
+    inserted += missing.length;
 
-    inserted += linkChunk.filter(
-      (link) => !existingKeys.has(`${link.tweet_id}::${link.url}`),
-    ).length;
-    updated += linkChunk.filter((link) =>
-      existingKeys.has(`${link.tweet_id}::${link.url}`),
-    ).length;
-
-    const payload = linkChunk.map((link) => ({
+    const payload = missing.map((link) => ({
       tweet_id: link.tweet_id,
       url: link.url,
       expanded_url: link.expanded_url ?? null,
@@ -214,24 +261,27 @@ export async function upsertLinks(
       domain: link.domain ?? null,
     }));
 
-    const { error } = await supabase
-      .from("links")
-      .upsert(payload, { onConflict: "tweet_id,url" });
-
-    if (error) throw error;
+    await writeInBatches("links", payload, LINK_CHUNK_SIZE, (batch) =>
+      supabase.from("links").upsert(batch, {
+        onConflict: "tweet_id,url",
+        ignoreDuplicates: true,
+      }),
+    );
   }
 
-  return { inserted, updated };
+  return { inserted };
 }
 
-export async function upsertTweetInteractions(
+async function writeTweetInteractions(
   interactions: TweetInteraction[],
+  refreshStored: boolean,
+  client?: WriteClient,
 ): Promise<{ inserted: number; updated: number }> {
   if (interactions.length === 0) {
     return { inserted: 0, updated: 0 };
   }
 
-  const supabase = getSupabaseClient();
+  const supabase = client ?? getSupabaseClient();
   const deduped = new Map<string, TweetInteraction>();
   for (const interaction of interactions) {
     deduped.set(
@@ -242,7 +292,7 @@ export async function upsertTweetInteractions(
 
   const normalized = [...deduped.values()];
   const tweetIds = [...new Set(normalized.map((item) => item.tweet_id))];
-  const existingTweets = await getExistingTweetIds(tweetIds);
+  const existingTweets = await getExistingTweetIds(tweetIds, supabase);
   const filtered = normalized.filter((item) => existingTweets.has(item.tweet_id));
 
   if (filtered.length === 0) {
@@ -268,15 +318,15 @@ export async function upsertTweetInteractions(
       ),
     );
 
-    inserted += interactionChunk.filter(
+    const missing = interactionChunk.filter(
       (item) =>
         !existingKeys.has(`${item.tweet_id}::${item.interaction_type}`),
-    ).length;
-    updated += interactionChunk.filter((item) =>
-      existingKeys.has(`${item.tweet_id}::${item.interaction_type}`),
-    ).length;
+    );
+    inserted += missing.length;
+    if (refreshStored) updated += interactionChunk.length - missing.length;
 
-    const payload = interactionChunk.map((interaction) => ({
+    const rows = refreshStored ? interactionChunk : missing;
+    const payload = rows.map((interaction) => ({
       tweet_id: interaction.tweet_id,
       interaction_type: interaction.interaction_type,
       interaction_at: interaction.interaction_at ?? null,
@@ -285,14 +335,37 @@ export async function upsertTweetInteractions(
       synced_at: interaction.synced_at ?? new Date().toISOString(),
     }));
 
-    const { error } = await supabase
-      .from("tweet_interactions")
-      .upsert(payload, { onConflict: "tweet_id,interaction_type" });
-
-    if (error) throw error;
+    await writeInBatches(
+      "tweet_interactions",
+      payload,
+      INTERACTION_CHUNK_SIZE,
+      (batch) =>
+        supabase.from("tweet_interactions").upsert(batch, {
+          onConflict: "tweet_id,interaction_type",
+          ignoreDuplicates: !refreshStored,
+        }),
+    );
   }
 
   return { inserted, updated };
+}
+
+// Writes every interaction and refreshes the ones already stored.
+export async function upsertTweetInteractions(
+  interactions: TweetInteraction[],
+  client?: WriteClient,
+): Promise<{ inserted: number; updated: number }> {
+  return writeTweetInteractions(interactions, true, client);
+}
+
+// Stores the interactions that are not stored yet and leaves stored ones as
+// they are, source and metadata included.
+export async function insertMissingTweetInteractions(
+  interactions: TweetInteraction[],
+  client?: WriteClient,
+): Promise<{ inserted: number }> {
+  const { inserted } = await writeTweetInteractions(interactions, false, client);
+  return { inserted };
 }
 
 export async function recordSync(state: SyncStateInput): Promise<void> {
