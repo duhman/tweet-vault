@@ -40,6 +40,7 @@ async function syncRun(data: unknown[], stub: Stub): Promise<void> {
       tweet_id: tweet.id,
       interaction_type: "bookmark" as const,
       source: "bird/bookmarks",
+      metadata: { cursor: "next-page" },
     })),
     stub.client,
   );
@@ -170,6 +171,20 @@ test("import leaves an interaction the sync wrote as it is", async () => {
     stub.calls.filter((call) => call.startsWith("tweet_interactions.")),
     ["tweet_interactions.select"],
   );
+});
+
+test("sync replaces the source and metadata of an interaction the import wrote", async () => {
+  const stub = stubClient();
+  await importRun(exportedTweets(), stub);
+  const imported = stub.tables.tweet_interactions.get("1::bookmark");
+  assert.equal(imported?.source, "manual-import");
+  assert.deepEqual(imported?.metadata, {});
+
+  await syncRun(exportedTweets(), stub);
+
+  const stored = stub.tables.tweet_interactions.get("1::bookmark");
+  assert.equal(stored?.source, "bird/bookmarks");
+  assert.deepEqual(stored?.metadata, { cursor: "next-page" });
 });
 
 test("import adds the bookmark for a stored tweet that has none", async () => {
