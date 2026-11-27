@@ -43,7 +43,7 @@ async function importFromFile(filePath: string): Promise<void> {
 
   // Process tweets
   const { tweets, added, skipped } = await processTweets(data);
-  console.log(`Added ${added} new tweets, skipped ${skipped} duplicates`);
+  console.log(`Added ${added} new tweets, updated or skipped ${skipped}`);
 
   await insertMissingTweetInteractions(
     tweets.map((tweet) => ({

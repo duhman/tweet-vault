@@ -68,7 +68,7 @@ export async function main() {
   console.log("Step 1/4: Processing tweets...");
   const { tweets, added, skipped } = await processTweets(data);
   console.log(`  ✅ Added ${added} new tweets`);
-  console.log(`  ⏭️  Skipped ${skipped} duplicates\n`);
+  console.log(`  ⏭️  Tweets updated/skipped: ${skipped}\n`);
 
   if (tweets.length === 0) {
     console.log("No tweets to process. Exiting.");
