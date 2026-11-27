@@ -6,7 +6,11 @@ import {
   insertMissingTweetInteractions,
   upsertTweetInteractions,
 } from "../src/utils/supabase.js";
-import { blockRealSupabaseClient, stubClient } from "./support/stub-supabase.js";
+import {
+  STATEMENT_TIMEOUT,
+  blockRealSupabaseClient,
+  stubClient,
+} from "./support/stub-supabase.js";
 
 blockRealSupabaseClient();
 
@@ -85,6 +89,25 @@ for (const [name, run] of [
     assert.deepEqual(storedKeys(stub), storedKeys(clean));
     assert.equal(stub.tables.links.size, 30);
     assert.equal(stub.tables.tweet_interactions.size, 30);
+  });
+
+  test(`${name}: a rerun after a single-row timeout ends like one clean run`, async () => {
+    const clean = stubClient();
+    await run(exportedTweets(2), clean);
+
+    // Both rows time out together, the first is stored alone, the second
+    // times out alone.
+    const stub = stubClient({
+      tweets: [STATEMENT_TIMEOUT, null, STATEMENT_TIMEOUT],
+    });
+    await assert.rejects(run(exportedTweets(2), stub), { code: "57014" });
+    assert.deepEqual([...stub.tables.tweets.keys()], ["1"]);
+
+    await run(exportedTweets(2), stub);
+
+    assert.ok(stub.tables.links.has("1::https://example.com/post-1"));
+    assert.ok(stub.tables.tweet_interactions.has("1::bookmark"));
+    assert.deepEqual(storedKeys(stub), storedKeys(clean));
   });
 
   test(`${name}: a rerun after a failed link write ends like one clean run`, async () => {
