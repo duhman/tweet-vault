@@ -161,6 +161,79 @@ test("retries a timed-out interaction batch as two halves", async () => {
   assert.deepEqual(result, { inserted: 25, updated: 0 });
 });
 
+test("every write names the unique columns as its conflict target", async () => {
+  const stub = stubClient();
+
+  await upsertTweets(tweets(1), stub.client);
+  await insertMissingLinks(links(1), stub.client);
+  await insertMissingTweetInteractions(likes(1), stub.client);
+  await upsertTweetInteractions(likes(1), stub.client);
+
+  assert.deepEqual(stub.upserts, [
+    { table: "tweets", options: { onConflict: "tweet_id" } },
+    {
+      table: "links",
+      options: { onConflict: "tweet_id,url", ignoreDuplicates: true },
+    },
+    {
+      table: "tweet_interactions",
+      options: {
+        onConflict: "tweet_id,interaction_type",
+        ignoreDuplicates: true,
+      },
+    },
+    {
+      table: "tweet_interactions",
+      options: {
+        onConflict: "tweet_id,interaction_type",
+        ignoreDuplicates: false,
+      },
+    },
+  ]);
+});
+
+// The lookup of stored rows and the write are two requests. A row stored by
+// another run between them is not in the lookup result.
+test("a link stored after the lookup is left as it is", async () => {
+  const stub = stubClient({}, { links: [[]] });
+  const stored = {
+    tweet_id: "1",
+    url: "https://example.com/1",
+    title: "Fetched title",
+  };
+  stub.tables.links.set("1::https://example.com/1", stored);
+
+  await insertMissingLinks(links(1), stub.client);
+
+  assert.deepEqual(stub.calls, ["links.select", "links.upsert:1"]);
+  assert.equal(stub.tables.links.get("1::https://example.com/1"), stored);
+});
+
+test("an interaction stored after the lookup is left as it is", async () => {
+  const stub = stubClient({}, { tweet_interactions: [[]] });
+  await upsertTweets(tweets(1), stub.client);
+  const stored = {
+    tweet_id: "1",
+    interaction_type: "like",
+    source: "bird/likes",
+    metadata: { cursor: "next-page" },
+  };
+  stub.tables.tweet_interactions.set("1::like", stored);
+  stub.calls.length = 0;
+
+  await insertMissingTweetInteractions(
+    [{ tweet_id: "1", interaction_type: "like", source: "manual-import" }],
+    stub.client,
+  );
+
+  assert.deepEqual(stub.calls, [
+    "tweets.select",
+    "tweet_interactions.select",
+    "tweet_interactions.upsert:1",
+  ]);
+  assert.equal(stub.tables.tweet_interactions.get("1::like"), stored);
+});
+
 test("empty input needs no client", async () => {
   assert.deepEqual(await upsertTweets([]), { added: [], updated: [] });
   assert.deepEqual(await insertMissingLinks([]), { inserted: 0 });

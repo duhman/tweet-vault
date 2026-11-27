@@ -5,6 +5,7 @@ import { getSupabaseClient } from "../../src/utils/supabase.js";
 export type StubError = { code: string; message: string };
 type Table = "tweets" | "links" | "tweet_interactions";
 type Row = Record<string, unknown>;
+type UpsertOptions = { onConflict?: string; ignoreDuplicates?: boolean };
 
 export const STATEMENT_TIMEOUT: StubError = {
   code: "57014",
@@ -31,9 +32,13 @@ export function blockRealSupabaseClient(): void {
 
 // Stands in for the Supabase client. It keeps the written rows per table,
 // answers `.select().in()` from them, fails upserts with the errors queued for
-// that table, in order, and records every call it receives.
+// that table, in order, and records every call it receives, with the options
+// of each upsert in `upserts`. A result queued in `staleSelects` is returned
+// by the next select on that table instead of the stored rows, which is what a
+// writer sees when another run stores a row after its lookup.
 export function stubClient(
   upsertErrors: Partial<Record<Table, Array<StubError | null>>> = {},
+  staleSelects: Partial<Record<Table, Row[][]>> = {},
 ) {
   const tables: Record<Table, Map<string, Row>> = {
     tweets: new Map(),
@@ -41,6 +46,7 @@ export function stubClient(
     tweet_interactions: new Map(),
   };
   const calls: string[] = [];
+  const upserts: Array<{ table: Table; options: UpsertOptions }> = [];
 
   const client = {
     from(table: Table) {
@@ -49,20 +55,21 @@ export function stubClient(
           return {
             in: async (column: string, values: string[]) => {
               calls.push(`${table}.select`);
+              const stale = staleSelects[table]?.shift();
               return {
-                data: [...tables[table].values()].filter((row) =>
-                  values.includes(row[column] as string),
-                ),
+                data:
+                  stale ??
+                  [...tables[table].values()].filter((row) =>
+                    values.includes(row[column] as string),
+                  ),
                 error: null,
               };
             },
           };
         },
-        upsert: async (
-          payload: Row[],
-          options: { ignoreDuplicates?: boolean } = {},
-        ) => {
+        upsert: async (payload: Row[], options: UpsertOptions = {}) => {
           calls.push(`${table}.upsert:${payload.length}`);
+          upserts.push({ table, options });
           const error = upsertErrors[table]?.shift() ?? null;
           if (error) return { error };
           for (const row of payload) {
@@ -76,5 +83,5 @@ export function stubClient(
     },
   };
 
-  return { client, tables, calls };
+  return { client, tables, calls, upserts };
 }
