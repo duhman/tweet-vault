@@ -137,7 +137,7 @@ export function getSupabaseClient(): any {
 
 async function getExistingTweetIds(
   tweetIds: string[],
-  supabase: any,
+  supabase: WriteClient,
 ): Promise<Set<string>> {
   const existing = new Set<string>();
 
@@ -156,12 +156,15 @@ async function getExistingTweetIds(
   return existing;
 }
 
+// The part of the Supabase client the writers use.
+export type WriteClient = { from(table: string): any };
+
 // The writers below take the client as an optional last argument so tests can
 // pass a stub. It is resolved after the empty-input return, so an empty call
 // needs no credentials.
 export async function upsertTweets(
   tweets: Tweet[],
-  client?: any,
+  client?: WriteClient,
 ): Promise<{ added: string[]; updated: string[] }> {
   if (tweets.length === 0) {
     return { added: [], updated: [] };
@@ -207,7 +210,7 @@ export async function upsertTweets(
 // as written: no case, slash or query normalising.
 export async function insertMissingLinks(
   links: Link[],
-  client?: any,
+  client?: WriteClient,
 ): Promise<{ inserted: number }> {
   if (links.length === 0) {
     return { inserted: 0 };
@@ -272,7 +275,7 @@ export async function insertMissingLinks(
 async function writeTweetInteractions(
   interactions: TweetInteraction[],
   refreshStored: boolean,
-  client?: any,
+  client?: WriteClient,
 ): Promise<{ inserted: number; updated: number }> {
   if (interactions.length === 0) {
     return { inserted: 0, updated: 0 };
@@ -350,7 +353,7 @@ async function writeTweetInteractions(
 // Writes every interaction and refreshes the ones already stored.
 export async function upsertTweetInteractions(
   interactions: TweetInteraction[],
-  client?: any,
+  client?: WriteClient,
 ): Promise<{ inserted: number; updated: number }> {
   return writeTweetInteractions(interactions, true, client);
 }
@@ -359,7 +362,7 @@ export async function upsertTweetInteractions(
 // they are, source and metadata included.
 export async function insertMissingTweetInteractions(
   interactions: TweetInteraction[],
-  client?: any,
+  client?: WriteClient,
 ): Promise<{ inserted: number }> {
   const { inserted } = await writeTweetInteractions(interactions, false, client);
   return { inserted };

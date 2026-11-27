@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { Tweet, upsertTweets } from "../utils/supabase.js";
+import { Tweet, WriteClient, upsertTweets } from "../utils/supabase.js";
 
 // Schema for Twitter GraphQL bookmark response (simplified)
 const TweetDataSchema = z.object({
@@ -222,7 +222,7 @@ function trimUrl(url: string): string {
  */
 export async function processTweets(
   tweets: unknown[],
-  client?: unknown,
+  client?: WriteClient,
 ): Promise<{ tweets: Tweet[]; added: number; skipped: number }> {
   const parsedTweets: Tweet[] = [];
   let skipped = 0;

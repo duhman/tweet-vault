@@ -1,5 +1,6 @@
 import {
   Tweet,
+  WriteClient,
   insertMissingLinks,
   getLinksWithoutMetadata,
   updateLinkMetadata,
@@ -16,7 +17,7 @@ import {
 // tweet stored by an earlier run that failed before this step has no links.
 export async function extractLinksFromTweets(
   tweets: Tweet[],
-  client?: unknown,
+  client?: WriteClient,
 ): Promise<{ inserted: number; skipped: number }> {
   let skipped = 0;
   const linkBatch: Array<{

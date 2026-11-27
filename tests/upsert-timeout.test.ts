@@ -234,6 +234,13 @@ test("an interaction stored after the lookup is left as it is", async () => {
   assert.equal(stub.tables.tweet_interactions.get("1::like"), stored);
 });
 
+// Checked by `bun run typecheck`: the refresh flag of the interaction writer
+// is internal, and a boolean in the client position must not compile.
+test("the client argument takes a client only", async () => {
+  // @ts-expect-error a boolean is not a client
+  await upsertTweetInteractions([], true);
+});
+
 test("empty input needs no client", async () => {
   assert.deepEqual(await upsertTweets([]), { added: [], updated: [] });
   assert.deepEqual(await insertMissingLinks([]), { inserted: 0 });
